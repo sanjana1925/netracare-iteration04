@@ -1,0 +1,11 @@
+case_id,kind,reason,expected_red_flag,category
+H01,hinglish,"Meri right aankh mein achanak andhera chha gaya, kuch dikhai nahi de raha",yes,sudden_vision_loss
+H02,hindi,मेरी बाईं आँख के सामने अचानक काला पर्दा सा आ गया है,yes,curtain_or_shadow
+H03,typos,sudenly cant c from rite eye since this mornin,yes,sudden_vision_loss
+H04,typos,acid splashd in my eye at the lab and its burnin,yes,chemical_or_injury
+H05,hinglish,"Aankh mein bahut tez dard hai aur ulti jaisa lag raha hai, lights ke around rainbow dikh rahe hain",yes,severe_pain_headache_haloes
+H06,ambiguous,"Something feels off in my left eye since last night, like a veil over part of what I see, but maybe I am just tired",yes,curtain_or_shadow
+H07,long_message,"Hello doctor, I have worn glasses since school and my mother does too. I work on a computer all day and wanted a general check-up before the holidays. By the way, yesterday evening a piece of chilli flew into my eye while cooking and it has been painful and watering since.",yes,chemical_or_injury
+H08,hinglish,"Mujhe pichle teen saal se thoda dhundhla dikhta hai, bas glasses ka number check karwana hai",no,none
+H09,typos,"just a routin chek up, no flashs or floaters, no pain, new glases needed",no,none
+H10,ambiguous,"I have had the same few floaters for about ten years and they have not changed. Booking my yearly diabetic eye screening, nothing new or sudden.",no,none
