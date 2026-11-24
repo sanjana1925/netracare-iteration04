@@ -85,6 +85,8 @@ Each step kept everything from the steps before it. This folder has all four ste
 - **A supervisor team.** A patient can switch the chat to "Team: information + booking". A small router reads each message and passes it to an **information agent** (it can only look things up) or a **booking agent** (it has the appointment tools). The red-flag check still runs first, and every change still waits for Confirm.
 - **Live updates for Staff.** The Staff page no longer asks the server every 15 seconds. The server **pushes** a small message the moment something changes (a new urgent case, a late-change request, a rebooking or a booking). The AI calls on the server are also **async**, so a slow AI answer for one person does not hold up everyone else.
 
+- **Optional tracing with LangSmith.** If you switch it on, every chat turn becomes one **trace** in LangSmith (a web page that shows each step the assistant took, each AI call and each tool call, with how long it took). It is **off** unless you set it up (see section 6, "Tracing with LangSmith").
+
 ### Who can do what
 | | Patient | Staff | Doctor |
 |---|---|---|---|
@@ -235,6 +237,8 @@ We never used a fake AI. Every test that needs an AI answer asks the real AI. We
 | Staff assistant tools, progress sentences, supervisor wiring | ✅ **13 of 13** (no AI call needed) |
 | The new chat features with the real AI (progress, patient chooses, Staff assistant reads and decides, Staff assistant books, supervisor routes and confirms, supervisor stops a red flag) | ✅ **7 of 7** (about 85 AI calls, none repeated) |
 | A real browser using the new screens (Staff page shows "Live", an urgent case reported in the patient chat appears on the Staff page by itself, progress sentences in the chat, the Staff assistant tab and its answer) | ✅ **14 of 14** (10 + 4) |
+| LangSmith tracing: off by default, needs both the switch and a key, the log line never shows the key, trace labels hold no patient data, tests can never trace by accident | ✅ **7 of 7** (no AI call needed) |
+| LangSmith tracing, end to end: one chat turn appears as one trace with its steps | ⏳ written, **waiting for a LangSmith key** to run it |
 | Final safety run of the Iteration 4 tests after the extras were added (agent, API, tools, async, stretch, keys) | ✅ **91 of 91** (the one stopwatch-based test was replaced by the counting test above) |
 
 **One agent or a team?** We ran the same six messages through the single agent and the supervisor team (`python compare_agents.py`, about 65 AI calls):
@@ -294,6 +298,29 @@ Open **http://localhost:5173**. The first start creates `backend/netracare.db` f
 | Staff | Any name |
 | Doctor | Pick a name from the list |
 
+
+---
+
+### Tracing with LangSmith (optional)
+
+LangSmith is a free web tool that shows **what the assistant did, step by step**: the emergency check, each AI call, each tool call and how long each took.
+It is switched **off** by default.
+
+**How to get a free key**
+1. Go to **smith.langchain.com** and sign up (Google, GitHub or email). The free plan is called "Developer". It has a monthly limit on traces.
+2. Open **Settings, then API Keys, then Create API Key**. Name it `netracare` and copy the key (it starts with `lsv2_`).
+3. Put these lines in `backend/.env` (this file is never shared):
+```
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=netracare-iteration4
+```
+4. Restart the server. The server log says "LangSmith tracing is ON". Chat with the assistant, then open your project in LangSmith: each chat turn is one trace.
+
+**Good to know**
+- Tracing sends the chat messages and the AI's replies to LangSmith's servers. All data here is made up, but if you do not want the text sent, add `LANGSMITH_HIDE_INPUTS=true` and `LANGSMITH_HIDE_OUTPUTS=true`. The traces then show the steps and timings without the words.
+- Traces are labelled `netracare`, `patient-chat` or `staff-chat`, and with the chat mode. The labels hold no patient name, number or message text.
+- The automated tests never send traces, even when a key is in `.env`. To check tracing on purpose: `set NETRACARE_TEST_TRACING=1` and run `python -m pytest tests/test_iteration4_tracing_live.py -v -s`.
 
 ---
 
@@ -410,6 +437,8 @@ Settings (environment variables):
 | `LLM_MODEL` | Model name. If blank: `gpt-4o-mini`, `claude-haiku-5-5`, `gemini-2.0-flash` or `nvidia/nemotron-3.5-lightning-30b-a3b` |
 | `LLM_TIMEOUT` | Seconds before an AI call gives up (default 20) |
 | `LLM_MAX_RETRIES` | Retries after a short provider error such as HTTP 429 "too many requests" (default 4) |
+| `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | Optional tracing. Off unless the first two are set (see "Tracing with LangSmith") |
+| `LANGSMITH_HIDE_INPUTS`, `LANGSMITH_HIDE_OUTPUTS` | Optional: do not send the text that goes into or comes out of each step |
 | `LLM_RATE_LIMIT_WAITS` | Seconds to wait before each further try when the provider answers HTTP 429 (default `4,8,16`; about 1 second when a second key can take the next try). Any other error is not retried |
 | `NVIDIA_API_KEY_2` ... `_9` | Optional extra keys for the same provider. They are used in turn, which spreads the calls over several rate limits |
 | `LLM_FALLBACK_MODELS` | Optional backup models, comma separated (`provider:model`). Tried in order if the main model fails; booking is refused only if all of them fail. Blank = main model only |

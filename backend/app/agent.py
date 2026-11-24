@@ -315,7 +315,8 @@ def get_graph(mode: str = "single"):
 
 def _cfg(patient_id: str, thread_id: str, mode: str = "single") -> dict:
     prefix = "sup:" if mode == "supervisor" else ""
-    return {"configurable": {"thread_id": f"{prefix}{patient_id}:{thread_id}", "patient_id": patient_id}, "recursion_limit": STEP_LIMIT}
+    return {"configurable": {"thread_id": f"{prefix}{patient_id}:{thread_id}", "patient_id": patient_id}, "recursion_limit": STEP_LIMIT,
+            "tags": ["netracare", "patient-chat"], "metadata": llm.trace_metadata("patient", mode)}   # labels for LangSmith (when tracing is on)
 
 
 def reset() -> None:

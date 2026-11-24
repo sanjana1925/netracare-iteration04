@@ -348,7 +348,8 @@ def reset() -> None:
 
 # ------------------------------------------------------------------------------------------------- one chat turn
 def _cfg(staff_name: str, thread_id: str) -> dict:
-    return {"configurable": {"thread_id": f"staff:{staff_name}:{thread_id}", "staff_name": staff_name}, "recursion_limit": STEP_LIMIT}
+    return {"configurable": {"thread_id": f"staff:{staff_name}:{thread_id}", "staff_name": staff_name}, "recursion_limit": STEP_LIMIT,
+            "tags": ["netracare", "staff-chat"], "metadata": llm.trace_metadata("staff")}   # labels for LangSmith (when tracing is on)
 
 
 def _drop(cfg) -> None:

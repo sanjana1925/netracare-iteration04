@@ -1,3 +1,11 @@
+import os
+
+# The tests make hundreds of AI calls: they must never be traced by accident because a key happens to be in .env.
+# (To trace on purpose, run test_iteration4_tracing_live.py with NETRACARE_TEST_TRACING=1.)
+if os.environ.get("NETRACARE_TEST_TRACING") != "1":
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
 import csv
 import os
 import shutil

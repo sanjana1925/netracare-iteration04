@@ -23,6 +23,7 @@ VisitType = Literal["new", "follow_up"]
 async def lifespan(app: FastAPI):
     # Appointments start empty (data pack README). NETRACARE_SEED_APPOINTMENTS=1 loads stretch/appointments_seed.csv.
     db.init_db(with_seed_appointments=os.environ.get("NETRACARE_SEED_APPOINTMENTS") == "1")
+    print("NetraCare:", llm.tracing_summary())
     threading.Thread(target=rag.index_size, daemon=True).start()  # load the embedding model + retrievers now, not on the first chat message
     yield
 

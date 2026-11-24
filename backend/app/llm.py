@@ -101,6 +101,29 @@ def candidates() -> list[tuple[Optional[str], Optional[str]]]:
     return out
 
 
+def tracing_enabled() -> bool:
+    """Is LangSmith tracing switched on? (Stretch goal.) It is OFF unless LANGSMITH_TRACING=true AND a LANGSMITH_API_KEY is set.
+    The tracing itself is done by the LangChain / LangGraph libraries from those settings: every graph step, AI call and tool call of a chat turn becomes
+    one trace you can open in LangSmith. This function only reports whether it is on; the key is never read, printed or sent anywhere by NetraCare's code."""
+    on = (os.environ.get("LANGSMITH_TRACING") or os.environ.get("LANGCHAIN_TRACING_V2") or "").strip().lower() in ("true", "1", "yes")
+    has_key = bool((os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY") or "").strip())
+    return on and has_key
+
+
+def tracing_summary() -> str:
+    """One plain sentence for the server log (no key in it)."""
+    if not tracing_enabled():
+        return "LangSmith tracing is OFF."
+    hidden = (os.environ.get("LANGSMITH_HIDE_INPUTS", "").lower() == "true", os.environ.get("LANGSMITH_HIDE_OUTPUTS", "").lower() == "true")
+    return (f"LangSmith tracing is ON (project: {os.environ.get('LANGSMITH_PROJECT') or 'default'}; "
+            f"message text {'hidden' if all(hidden) else 'sent to LangSmith'}).")
+
+
+def trace_metadata(kind: str, mode: str = "single") -> dict:
+    """Labels added to every trace so they can be filtered in LangSmith. No patient name, number or message text."""
+    return {"app": "netracare-iteration4", "chat": kind, "mode": mode}
+
+
 _calls = 0
 _calls_lock = threading.Lock()
 
