@@ -12,6 +12,20 @@ There is also a **chat assistant**. A patient can type "Book me a retina check o
 >
 > All the data is made up. Everything that uses AI uses a **real AI model**. Nothing is faked, not even in the tests.
 
+### What it is built with
+
+| Part | Technology | What it does, in plain words |
+|---|---|---|
+| The website you see | **React** and **Vite** | The pages, buttons and the chat window |
+| The server | **FastAPI** (Python) | Receives every click, checks who you are and what you may do |
+| The clinic rules | Plain **Python** | Decides if a booking is allowed |
+| The database | **SQLite** | Stores patients, doctors and appointments |
+| The chat assistant | **LangGraph** and **LangChain** | Runs the chat step by step: check for an emergency, think, use a tool, wait for Confirm |
+| The AI model | **NVIDIA** `nemotron-3.5-lightning-30b-a3b` (OpenAI, Anthropic and Google also work) | Understands the words and writes the replies |
+| Answers from the clinic documents | **Chroma** (a search database) and keyword search, with **sentence-transformers** | Finds the right piece of a document and shows where it came from |
+| Tests | **pytest** and a real **Chrome** browser | Checks everything with the real AI, no fake one |
+| Running it | **Docker Compose** and **nginx** | Starts the website and the server together with one command |
+
 Sections 1 to 5 are for everyone. Sections 6 to 10 are for developers.
 
 ---
@@ -34,7 +48,7 @@ Each step kept everything from the steps before it. This folder has all four ste
 ## 2. What it can do
 
 ### Step 1: the booking website
-- **Log in.** Patients use their mobile number and name. Staff type a name. Doctors pick their name. (There are no passwords. This is a classroom project.)
+- **Log in.** (The server is FastAPI.) Patients use their mobile number and name. Staff type a name. Doctors pick their name. (There are no passwords. This is a classroom project.)
 - **See the doctors** and their free times.
 - **Book an appointment.** Pick a doctor, a day and a time. A new visit takes 20 minutes. A follow-up takes 10 minutes. The website checks every clinic rule.
 - **Cancel or move an appointment.** A patient can do this up to 2 hours before the visit.
@@ -43,21 +57,21 @@ Each step kept everything from the steps before it. This folder has all four ste
 - **Doctors can** see their day and mark a visit as done.
 
 ### Step 2: AI helpers
-- **Emergency check.** When someone books, the AI reads the reason. If it sounds like an emergency (for example "a curtain came down over my eye"), the website shows a red message and tells Staff. If the AI cannot check, the booking is **not** made. This keeps patients safe.
+- **Emergency check.** When someone books, the AI model reads the reason. If it sounds like an emergency (for example "a curtain came down over my eye"), the website shows a red message and tells Staff. If the AI cannot check, the booking is **not** made. This keeps patients safe.
 - **Fact of the Day.** A short, friendly eye fact when a patient logs in.
-- **Doctor summary.** A doctor opens a patient and sees a short summary of the old notes, written live on the screen. Every visit shows its date.
+- **Doctor summary.** A doctor opens a patient and sees a short summary of the old notes, written live on the screen (sent to the browser as server-sent events). Every visit shows its date.
 - **Urgent cases.** Staff see a red number with the urgent cases they have not looked at yet.
 
 ### Step 3: a chat that answers questions
-- A patient asks "How much is a new visit?" or "What should I bring?" The chat answers **from the clinic's own documents** and shows **where the answer came from**.
+- A patient asks "How much is a new visit?" or "What should I bring?" The chat answers **from the clinic's own documents** and shows **where the answer came from**. This is called RAG (look it up first, then answer). The documents are searched with Chroma and keyword search.
 - If the documents do not say, the chat says **"I don't know"**. It never guesses.
 - A patient can describe a problem ("my eyes feel dry on the laptop"). The chat names the right kind of doctor. It never says what the problem might be.
 - Staff can try the search themselves and see what it found.
 
 ### Step 4: a chat that books for you
-- The patient writes what they want. The assistant looks up **real free times**.
-- Before it books, cancels or moves anything, it shows a **card with two buttons: Confirm and No.** Nothing changes until the patient presses Confirm.
-- It remembers the chat. "Actually, make it the afternoon" works.
+- The patient writes what they want. The assistant (built with LangGraph) looks up **real free times** using seven small tools.
+- Before it books, cancels or moves anything, it shows a **card with two buttons: Confirm and No.** Nothing changes until the patient presses Confirm. (This pause is a LangGraph feature called `interrupt`.)
+- It remembers the chat (LangGraph memory). "Actually, make it the afternoon" works.
 - It can only see and change **that patient's own** appointments.
 - **Doctor leave.** A doctor marks a day off. The website cancels that day's appointments and suggests a new time for each patient. Staff say yes or no. The patient sees "Moved because Dr. … is on leave".
 - A new home page and one colour style on every page.
@@ -78,12 +92,14 @@ Each step kept everything from the steps before it. This folder has all four ste
 
 ```mermaid
 flowchart LR
-    P["Person using the website"] --> W["Website"]
-    W --> S["Server"]
-    S --> R["Clinic rules<br/>(plain code)"]
-    R --> D[("Database")]
-    S --> AI["AI model<br/>understands and explains"]
-    S --> K["Clinic documents<br/>(for answers with sources)"]
+    P["Person using the website"] --> W["Website<br/>(React)"]
+    W --> S["Server<br/>(FastAPI)"]
+    S --> R["Clinic rules<br/>(plain Python)"]
+    R --> D[("Database<br/>(SQLite)")]
+    S --> A["Chat assistant<br/>(LangGraph)"]
+    A --> AI["AI model<br/>(NVIDIA)"]
+    A --> K[("Clinic documents<br/>(Chroma search)")]
+    A --> R
 ```
 
 **A booking in the chat, one step at a time**
@@ -91,9 +107,9 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     actor P as Patient
-    participant C as Chat assistant
-    participant R as Clinic rules
-    participant D as Database
+    participant C as Chat assistant (LangGraph)
+    participant R as Clinic rules (Python)
+    participant D as Database (SQLite)
     P->>C: "Book my retina check Friday morning"
     C->>C: Emergency check first
     C->>R: Which times are free?
@@ -106,7 +122,7 @@ sequenceDiagram
     C-->>P: "Booked!"
 ```
 
-**What the AI does and what the code does**
+**What the AI does and what the code does** (the AI is the NVIDIA model, the code is Python)
 
 | The AI | The plain code |
 |---|---|
