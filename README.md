@@ -238,7 +238,7 @@ We never used a fake AI. Every test that needs an AI answer asks the real AI. We
 | The new chat features with the real AI (progress, patient chooses, Staff assistant reads and decides, Staff assistant books, supervisor routes and confirms, supervisor stops a red flag) | ✅ **7 of 7** (about 85 AI calls, none repeated) |
 | A real browser using the new screens (Staff page shows "Live", an urgent case reported in the patient chat appears on the Staff page by itself, progress sentences in the chat, the Staff assistant tab and its answer) | ✅ **14 of 14** (10 + 4) |
 | LangSmith tracing: off by default, needs both the switch and a key, the log line never shows the key, trace labels hold no patient data, tests can never trace by accident | ✅ **7 of 7** (no AI call needed) |
-| LangSmith tracing, end to end: one chat turn appears as one trace with its steps | ⏳ written, **waiting for a LangSmith key** to run it |
+| LangSmith tracing, end to end: one real chat turn appears in LangSmith as one trace with its steps | ✅ **passed**: the trace showed the emergency check, the agent, the tools, the document search (vector, keyword and combined) and 4 AI calls |
 | Final safety run of the Iteration 4 tests after the extras were added (agent, API, tools, async, stretch, keys) | ✅ **91 of 91** (the one stopwatch-based test was replaced by the counting test above) |
 
 **One agent or a team?** We ran the same six messages through the single agent and the supervisor team (`python compare_agents.py`, about 65 AI calls):
@@ -309,7 +309,7 @@ It is switched **off** by default.
 **How to get a free key**
 1. Go to **smith.langchain.com** and sign up (Google, GitHub or email). The free plan is called "Developer". It has a monthly limit on traces.
 2. Open **Settings, then API Keys, then Create API Key**. Name it `netracare` and copy the key (it starts with `lsv2_`).
-3. Put these lines in `backend/.env` (this file is never shared):
+3. Put these lines in `backend/.env` (this file is never shared). Write the names exactly as shown, with underscores and no spaces:
 ```
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=lsv2_...

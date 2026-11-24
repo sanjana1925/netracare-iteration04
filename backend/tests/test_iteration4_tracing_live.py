@@ -11,10 +11,14 @@ It needs LANGSMITH_TRACING=true and LANGSMITH_API_KEY in backend/.env. Without t
 import os
 import time
 import uuid
+from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
 
 from helpers import login_patient
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")   # the skip condition below must see the settings in backend/.env
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("NETRACARE_TEST_TRACING") != "1" or not os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGSMITH_TRACING", "").lower() != "true",
