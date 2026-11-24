@@ -1,204 +1,181 @@
-# 👁️ NetraCare: an eye-clinic website with a chat assistant that books for you
+# 👁️ NetraCare: an eye clinic website with a helpful chat
 
-NetraCare is a (fictional) eye clinic. **Patients** book appointments, **Staff** run the clinic day, and **Doctors** see their schedule.
-It was built in four steps (iterations), and this folder holds **all four together**. Each step added something new, and everything from the earlier
-steps is still here and still works:
+NetraCare is a made-up eye clinic. It is a website with three kinds of users:
+
+- **Patients** book, change and cancel their appointments.
+- **Staff** (the front desk) run the clinic day.
+- **Doctors** see their day and their patients.
+
+There is also a **chat assistant**. A patient can type "Book me a retina check on Friday morning" and the assistant finds a free time and books it, but only after the patient presses **Confirm**.
+
+> **The one big rule:** the AI never decides a booking. Plain computer code checks the clinic rules (opening hours, lunch break, no double booking and so on). The AI only understands the words, looks things up and explains.
+>
+> All the data is made up. Everything that uses AI uses a **real AI model**. Nothing is faked, not even in the tests.
+
+Sections 1 to 5 are for everyone. Sections 6 to 10 are for developers.
+
+---
+
+## 1. How it grew: four steps
 
 ```mermaid
 flowchart LR
-    I1["<b>Iteration 1</b><br/>The booking website<br/>patients, Staff, doctors<br/>and the clinic rules"]
-    I2["<b>Iteration 2</b><br/>AI helpers<br/>red-flag check, Fact of the Day,<br/>doctor summary"]
-    I3["<b>Iteration 3</b><br/>Knowledge-base chat<br/>answers from the clinic's own documents,<br/>with sources"]
-    I4["<b>Iteration 4</b><br/>Booking agent<br/>the chat finds times and books,<br/>cancels and moves appointments"]
+    I1["<b>Step 1</b><br/>The booking website"]
+    I2["<b>Step 2</b><br/>AI helpers"]
+    I3["<b>Step 3</b><br/>A chat that answers questions"]
+    I4["<b>Step 4</b><br/>A chat that books for you"]
     I1 --> I2 --> I3 --> I4
 ```
 
-**The most important rule:** the AI never decides a booking. The clinic rules are plain Python code (`rules.py`), and every booking, from the website or
-from the chat, goes through the same rules. The AI only understands what people write, chooses what to look up, and explains in plain words.
-
-> All data is synthetic (course data packs 1 to 4). Every AI feature uses a **real language model**. There is no fake or stand-in model anywhere, not even in the tests.
+Each step kept everything from the steps before it. This folder has all four steps together.
 
 ---
 
-## 1. What NetraCare can do today
+## 2. What it can do
 
-### Iteration 1: the booking website
-| Feature | What it does |
-|---|---|
-| 🔑 **Log in** | Patients log in with a mobile number and name, Staff with a name, Doctors by picking their name. (A classroom login: there are no passwords.) |
-| 🩺 **Doctors and free times** | See the five doctors, their specialities, and the free start times for a day. |
-| 📅 **Book** | Pick a doctor, speciality, visit type (new consultation 20 minutes, follow-up 10 minutes), day and time. Every clinic rule is checked (see the table in section 4). |
-| ❌ **Cancel and 🔁 reschedule** | A patient can cancel or move their own appointment up to 2 hours before it starts. The old time is released only if the new time is accepted. |
-| 🕑 **Late changes go to Staff** | A cancel or move inside 2 hours is saved as a request. The appointment stays booked until Staff approve or reject it. |
-| 🧑‍💼 **Staff tools** | See all appointments, book for any patient, register a walk-in patient, cancel, approve or reject late requests, add or remove holidays, edit a doctor's weekly schedule (OPD, surgery or off), and see a doctor's week on a calendar. A change that would break an existing booking is refused. |
-| 📋 **Doctor's day** | A doctor sees their own schedule and marks a visit completed. |
+### Step 1: the booking website
+- **Log in.** Patients use their mobile number and name. Staff type a name. Doctors pick their name. (There are no passwords. This is a classroom project.)
+- **See the doctors** and their free times.
+- **Book an appointment.** Pick a doctor, a day and a time. A new visit takes 20 minutes. A follow-up takes 10 minutes. The website checks every clinic rule.
+- **Cancel or move an appointment.** A patient can do this up to 2 hours before the visit.
+- **Late changes go to Staff.** If it is less than 2 hours before the visit, the request goes to Staff. The appointment stays booked until Staff say yes or no.
+- **Staff can** see all appointments, book for anyone, add a new walk-in patient, add holidays, change a doctor's weekly schedule and see a doctor's week.
+- **Doctors can** see their day and mark a visit as done.
 
-### Iteration 2: AI helpers
-| Feature | What it does | AI or plain code? |
-|---|---|---|
-| 🛡️ **Red-flag check** | When someone books, the reason is checked. A sight-threatening symptom shows an emergency message in red and creates an **urgent case** for Staff. If the check cannot run, the booking is **refused**, so an emergency is never booked silently. | AI says "red flag or not". Code shows the message, saves the case and runs the rules. |
-| 💡 **Fact of the Day** | A short, friendly eye fact when a patient logs in. It is saved for each patient, so the next login shows it at once. Refresh gives a different one. | AI writes it. Code saves it and adds "General information, not medical advice". |
-| 📝 **Doctor summary** | A doctor opens a patient and watches a summary of the recorded notes appear as it is written (Today, Background, Past visits, with the date of every visit). | AI words each visit's note. Code fills the dates, doctors and specialities from the real records and keeps it short. |
-| 🔔 **Urgent cases for Staff** | A red badge with the number of unseen urgent cases, a red list at the top of the Staff page, and a "Mark seen" button. | Plain code |
-| ✍️ **Reason and note** | The booking form needs a reason (up to 300 characters). A doctor writes a note when completing a visit. | Plain code |
+### Step 2: AI helpers
+- **Emergency check.** When someone books, the AI reads the reason. If it sounds like an emergency (for example "a curtain came down over my eye"), the website shows a red message and tells Staff. If the AI cannot check, the booking is **not** made. This keeps patients safe.
+- **Fact of the Day.** A short, friendly eye fact when a patient logs in.
+- **Doctor summary.** A doctor opens a patient and sees a short summary of the old notes, written live on the screen. Every visit shows its date.
+- **Urgent cases.** Staff see a red number with the urgent cases they have not looked at yet.
 
-If the AI is not available, the app still works safely: the fact shows a fixed fallback fact, the summary says "Summary unavailable. See the notes below.",
-and booking is refused with "We couldn't check your reason just now".
+### Step 3: a chat that answers questions
+- A patient asks "How much is a new visit?" or "What should I bring?" The chat answers **from the clinic's own documents** and shows **where the answer came from**.
+- If the documents do not say, the chat says **"I don't know"**. It never guesses.
+- A patient can describe a problem ("my eyes feel dry on the laptop"). The chat names the right kind of doctor. It never says what the problem might be.
+- Staff can try the search themselves and see what it found.
 
-### Iteration 3: the knowledge-base chat
-| Feature | What it does | AI or plain code? |
-|---|---|---|
-| 💬 **Ask NetraCare** | A patient asks about timings, fees, what to bring, dilation, procedures and doctors. The answer shows where it came from (for example `Sources: clinic_policy_faq.md › Consultation fees`) or says **"I don't know"** when the documents don't cover it. | AI writes the answer. Code builds the sources and the fixed "I don't know". |
-| 🧭 **Speciality routing** | "My optician said the pressure in my eyes is high" gets "A Glaucoma specialist can assess this. At NetraCare that is Dr. Meera Iyer. The doctor will assess you at your visit." It never names a condition or suggests a treatment. | AI picks the speciality from the doctors document. |
-| 🛡️ **Red flags in the chat** | Every chat message goes through the red-flag check first. A red flag gets the emergency message and an urgent case marked "from chat". | Same check as Iteration 2 |
-| 🔎 **Search debug (Staff)** | Staff type a question and see the top 4 chunks from keyword, vector and combined search, each with file, section and score. | Plain code |
-| 📚 **Knowledge base** | The clinic documents are cut into small pieces (one per section), turned into numbers (embeddings, run free on your own computer) and stored in a Chroma index. Search combines keyword search and meaning search, each counting half. | Embeddings |
+### Step 4: a chat that books for you
+- The patient writes what they want. The assistant looks up **real free times**.
+- Before it books, cancels or moves anything, it shows a **card with two buttons: Confirm and No.** Nothing changes until the patient presses Confirm.
+- It remembers the chat. "Actually, make it the afternoon" works.
+- It can only see and change **that patient's own** appointments.
+- **Doctor leave.** A doctor marks a day off. The website cancels that day's appointments and suggests a new time for each patient. Staff say yes or no. The patient sees "Moved because Dr. … is on leave".
+- A new home page and one colour style on every page.
+- If the AI service is busy, the website waits and tries again. You can add a second key to share the work.
 
-### Iteration 4: the booking agent
-| Feature | What it does | Who decides? |
-|---|---|---|
-| 🤖 **Booking in the chat** | "Book my retina follow-up with Dr. Shah this Friday morning, the earliest time." The agent looks up real free times and shows a **confirmation card**. "Actually, make it the afternoon" gives one card to move it. It also cancels, shows "What appointments do I have?", and still answers clinic questions with sources. | The agent (an AI) picks tools and words the reply. |
-| ✅ **Confirm before every change** | Book, cancel and reschedule pause at a card with **Confirm** and **No**. Nothing changes until Confirm. A typed message while a card is waiting counts as No. | The patient |
-| 🧰 **Seven tools** | `search_clinic_docs`, `list_doctors`, `find_slots`, `my_appointments`, `book_appointment`, `cancel_appointment`, `reschedule_appointment`. They are a thin layer over the same functions the website uses. A tool never checks a rule itself and never writes to the database directly. | The clinic API allows or refuses, and the agent explains a refusal. |
-| 🔒 **The patient comes from the login** | The patient's ID is taken from the login and passed through the graph's settings, never as something the AI can choose. Asking to cancel someone else's appointment is refused and reveals nothing. | Code |
-| 🧠 **Memory** | Each chat has a `thread_id` and the agent sees the last 20 messages. "New chat" and logging out start a fresh chat. Nothing from the chat is stored in the database except what the tools do and urgent cases. | Code |
-| 🏖️ **Doctor leave and rebooking** | A doctor marks a morning, afternoon or full day of leave. Bookings in that time are refused (`DOCTOR_ON_LEAVE`). The affected appointments are cancelled and plain code proposes a new time for each. Staff approve or reject each one, and the patient sees "Moved because Dr. … is on leave". | Code proposes, Staff decide |
-| 🏠 **New home page and look** | A bento home page of soft pastel tiles (headline, emergency call, chat, specialists, opening days) that becomes one column on a phone, and one colour palette on every page. | – |
-| 🔁 **Rate-limit friendly** | When the AI service says "too many requests" or has a short outage, the app waits and tries again. You can add a second API key of the same model, and the app uses the keys in turn. | Code |
-
-### What each role can do
-| Role | Can do |
-|---|---|
-| 🧑 **Patient** | Log in, see a Fact of the Day, chat with the assistant (ask about the clinic, find free times, book, cancel, reschedule), see doctors and free times, book with a reason, cancel, move, and see their own appointments (including a late request waiting for Staff). |
-| 🧑‍💼 **Staff** | Everything from Iteration 1, plus: enter a reason when booking for someone, see and clear **urgent cases**, use the **search debug view**, **approve or reject** late changes, and **approve or reject the new times after a doctor's leave**. |
-| 🩺 **Doctor** | See their schedule and each patient's reason, write a note when completing a visit, **open a patient to see the summary** and the full past notes, and **mark leave**. |
+### Who can do what
+| | Patient | Staff | Doctor |
+|---|---|---|---|
+| Book, cancel, move own appointments | ✅ | ✅ (for anyone) | – |
+| Chat with the assistant | ✅ | – | – |
+| See urgent cases and approve late changes | – | ✅ | – |
+| Search tool (see what the chat found) | – | ✅ | – |
+| Mark leave, write notes, see patient summaries | – | – | ✅ |
 
 ---
 
-## 2. How it works
-
-**The big picture**
+## 3. How it works (the simple version)
 
 ```mermaid
 flowchart LR
-    A["Browser<br/>(React)"] -->|"/api/..."| B["Web server<br/>nginx or Vite"]
-    B --> C["FastAPI<br/>who are you? what may you do?"]
-    C --> R["Red-flag check<br/>(llm.py)"]
-    R -->|"asks"| M(["Language model<br/>NVIDIA, OpenAI, Anthropic or Google"])
-    C --> H["Booking agent<br/>(agent.py, tools.py)"]
-    H -->|"the tools"| D
-    H -->|"search_clinic_docs"| K[("Chroma index + keyword search<br/>42 chunks (rag.py)")]
-    H -->|"thinks and words replies"| M
-    D3["Data packs 3 + 4<br/>3 documents"] -->|"build_index.py"| K
-    C --> D["service.py<br/>one safe action"]
-    D --> E["rules.py<br/>is it allowed?"]
-    D --> F[("SQLite database")]
-    C -.->|"Fact, summary"| M
-    G["CSV files<br/>(data packs 1 and 2)"] -->|"loaded at start"| F
+    P["Person using the website"] --> W["Website"]
+    W --> S["Server"]
+    S --> R["Clinic rules<br/>(plain code)"]
+    R --> D[("Database")]
+    S --> AI["AI model<br/>understands and explains"]
+    S --> K["Clinic documents<br/>(for answers with sources)"]
 ```
 
-**One chat message, step by step** (this is the LangGraph graph; it is also saved as [`graph.mmd`](graph.mmd))
-
-```mermaid
-flowchart TD
-    S([patient message]) --> R["redflag node<br/>(check_red_flags, plain code)"]
-    R -->|"red flag, or the check cannot run"| X([emergency reply + urgent case, or 'we couldn't check'<br/>NO tool is called])
-    R -->|"ok"| A["agent node<br/>(AI + 7 tools bound)"]
-    A -->|"asks for tools"| T["tools node<br/>(runs the tools)"]
-    T -->|"results back"| A
-    T -.->|"book / cancel / reschedule"| C{{"confirmation card<br/>interrupt()"}}
-    C -.->|"Confirm / No"| T
-    A -->|"a reply"| E(["code adds the Sources line or the fixed 'I don't know',<br/>then shows the card or the answer"])
-```
-
-1. **Red-flag node** (code): the message goes through `check_red_flags` first. A red flag ends the turn with the emergency message in red, an urgent case "from chat", and **no tools**.
-2. **Agent node:** the model gets its instructions, today's date, a 30-day calendar, the patient's name, age, upcoming appointments and past visits (no doctor notes, no health details), and the conversation. It answers, asks a question, or asks for tools.
-3. **Tools node:** runs the tools and gives the results back. This loops up to a step limit.
-4. **Confirm:** book, cancel and reschedule call `interrupt()` with a one-line summary before they touch the clinic API. The website shows the card and answers with `{thread_id, confirm: true|false}`.
-5. **The API decides:** the tool calls the same rules check as the website. A refusal comes back with its reason code, and the agent explains it and offers free times.
-6. **Code finishes the reply:** the sources come from the document search result, never from the AI.
-
-**A booking in the chat, from start to finish**
+**A booking in the chat, one step at a time**
 
 ```mermaid
 sequenceDiagram
     actor P as Patient
-    participant W as Website
-    participant G as Agent graph
-    participant A as Clinic API (rules.py)
+    participant C as Chat assistant
+    participant R as Clinic rules
     participant D as Database
-    P->>W: "Book my retina follow-up with Dr. Shah Friday morning"
-    W->>G: message + thread_id
-    G->>G: red-flag check (code)
-    G->>A: find_slots (read only)
-    A-->>G: the real free times
-    G-->>W: confirmation card (the graph is paused)
-    P->>W: presses Confirm
-    W->>G: confirm = true
-    G->>A: book_appointment
-    A->>A: every clinic rule is checked
-    A->>D: save the appointment (only if allowed)
-    A-->>G: booked (or a refusal with its reason)
-    G-->>W: reply in plain words
+    P->>C: "Book my retina check Friday morning"
+    C->>C: Emergency check first
+    C->>R: Which times are free?
+    R-->>C: These times are free
+    C-->>P: Card: "Book Dr. Shah, Fri 9:00?" [Confirm] [No]
+    P->>C: Confirm
+    C->>R: Please book it
+    R->>R: Check every clinic rule
+    R->>D: Save the appointment
+    C-->>P: "Booked!"
 ```
 
-**Booking from the website (Iteration 2 and later)**
+**What the AI does and what the code does**
 
-```mermaid
-flowchart TD
-    B1["Patient or Staff fills in doctor, time and reason"] --> B2{"Logged in, right role,<br/>reason given (max 300 characters)?"}
-    B2 -->|no| X1["Refused with a plain message"]
-    B2 -->|yes| B3["Red-flag check by the AI"]
-    B3 -->|"check cannot run"| X2["Booking refused, nothing saved"]
-    B3 -->|"red flag"| U["Urgent case saved for Staff,<br/>emergency message in red"]
-    B3 -->|"ok"| B4["Clinic rules run (rules.py)"]
-    U --> B4
-    B4 -->|"a rule fails"| X3["Refused with its reason code<br/>(an urgent case, if any, still stands)"]
-    B4 -->|"all rules pass"| OK["Appointment saved,<br/>tagged Urgent if flagged"]
-```
-
-**Doctor leave and rebooking**
-
-```mermaid
-flowchart TD
-    L1["Doctor marks leave:<br/>a date and AM, PM or the full day"] --> L2["Bookings in that time are refused<br/>(DOCTOR_ON_LEAVE)"]
-    L1 --> L3["Plain code goes through each affected appointment, in time order"]
-    L3 --> L4{"New consultation or follow-up?"}
-    L4 -->|"new consultation"| L5["Earliest free slot with any doctor<br/>of that speciality"]
-    L4 -->|"follow-up"| L6["The same doctor's next free slot"]
-    L5 --> L7["Saved as a proposed appointment<br/>(it holds the slot)"]
-    L6 --> L7
-    L7 --> L8{"Staff decide"}
-    L8 -->|Approve| L9["Becomes booked; the patient sees<br/>'Moved because Dr. ... is on leave'"]
-    L8 -->|Reject| L10["The slot is free again"]
-    L3 -->|"nothing free in 30 days"| L11["'No slot: call the patient'"]
-```
-
-**What is AI and what is plain code**
-
-| The AI (language model) | Plain code, never the AI |
+| The AI | The plain code |
 |---|---|
-| Is this reason a red flag, and which category | Whether a booking, cancel or reschedule is allowed |
-| The wording of the Fact of the Day and of each visit's note in the summary | The emergency message and the caveat (word for word), the dates and doctors in a summary, all fallbacks |
-| Which tools to call, which free time to offer, how to explain a refusal, the wording of a chat answer | The confirmation card, which patient is acting, the **Sources** line, the fixed "I don't know", who may chat, doctor-leave proposals |
+| Reads what the person wrote | Decides if a booking is allowed |
+| Picks what to look up | Shows the card and waits for Confirm |
+| Explains in friendly words | Knows who the patient is (from the login) |
+| Writes the fact and the summary wording | Adds the "where this came from" line |
+| | Shows the emergency message |
 
-The retrieval and the answer chain are in [`backend/app/rag.py`](backend/app/rag.py); the agent graph and its prompt are in [`backend/app/agent.py`](backend/app/agent.py);
-the tools are in [`backend/app/tools.py`](backend/app/tools.py); the one booking path and doctor leave are in [`backend/app/ops.py`](backend/app/ops.py);
-the AI calls (model setup, red-flag check, Fact, summary, retries) are in [`backend/app/llm.py`](backend/app/llm.py).
+**If a doctor goes on leave**
 
-**Safety rules the code keeps**
-- Every chat message goes through the red-flag check first. If the check cannot run, the chat does not answer or act.
-- The clinic API decides every booking, cancel and reschedule. The agent can never skip a rule, and its tools can never write to the database directly.
-- Nothing changes until the patient presses Confirm. A late cancel or move waits for Staff.
-- The patient's ID comes from the login. The agent only ever sees and changes that patient's appointments.
-- The chat never names a likely condition and never suggests a treatment. Answers about the clinic show their sources, or "I don't know".
-- The agent's prompt has no doctor notes or health details.
-- Your API keys live only in `backend/.env`, which is never committed.
+```mermaid
+flowchart TD
+    A["Doctor marks leave"] --> B["Nobody can book that doctor<br/>for that time"]
+    A --> C["The website finds a new time<br/>for each patient"]
+    C --> D{"Staff decide"}
+    D -->|Yes| E["Appointment moves.<br/>Patient sees why."]
+    D -->|No| F["The time is free again"]
+```
 
 ---
 
-## 3. Run it
+## 4. Why it is safe
 
+- Every chat message goes through the **emergency check first**. If the check cannot run, the chat does nothing.
+- **Clinic rules are in plain code.** The AI cannot skip them.
+- **Nothing changes until the patient presses Confirm.**
+- The patient is known from the **login**. The AI cannot pick someone else.
+- The chat **never says what a problem might be** and **never suggests a medicine or treatment**.
+- Answers about the clinic show **where they came from**, or say "I don't know".
+- The AI never sees the doctors' private notes.
+- The secret AI key is kept in one private file (`backend/.env`) that is never shared.
+
+---
+
+## 5. How we tested it
+
+We never used a fake AI. Every test that needs an AI answer asks the real AI. We checked the AI against lists of questions with known right answers.
+
+**What we checked**
+| List | What it holds |
+|---|---|
+| Clinic rule cases | 38 booking cases with the expected result |
+| Emergency reasons | 45 reasons, each marked emergency or not (some in Hindi, Hinglish, with typos) |
+| Chat questions | 20 questions with the right source. 5 should get "I don't know" |
+| Problems in the patient's own words | 20 problems with the right kind of doctor |
+| Booking chats | 24 chats checked against the database |
+| Doctor leave cases | 5 leave cases with the new time the code should suggest |
+
+**Results** (real AI model: NVIDIA `nemotron-3.5-lightning-30b-a3b`)
+| What we checked | Result |
+|---|---|
+| Booking chats (24) | ✅ **24 of 24** |
+| Chat questions (20) | ✅ **20 of 20** |
+| Finding the right doctor, first 10 (goal: at least 9) | ✅ **9 of 10** (one case, R06, sometimes picks a general doctor) |
+| Finding the right doctor, next 10 | ✅ **10 of 10** |
+| Emergency check, 35 marked reasons | ✅ **No missed emergencies, no false alarms** |
+| 10 hard cases (Hindi, Hinglish, typos) | ✅ **10 of 10** |
+| Same 45 emergency cases on the main AI model | ✅ **45 of 45** |
+| All other tests together (rules, website calls, tools, search, doctor leave) | ✅ **279 passed**, 1 failed because of a dropped internet connection, and it passed when run again |
+| A real browser using the booking chat (22 steps) | ✅ **22 of 22**: card, Confirm, No, move in the same chat, sources, "I don't know", a refusal explained, an emergency, doctor leave |
+| A real browser on the home page | ✅ **40 of 40** on a big screen, a tablet and a phone |
+| Real browser checks of steps 1, 2 and 3 | ✅ All passed (7 of 7, 9 of 9, 8 of 8) |
+
+The AI does not give exactly the same answer every time, so a repeat run can differ by one check. These numbers come from the latest full run of each kind.
+
+---
+
+## 6. Run it
 **1. Set your AI key (optional, but needed for the AI features)**
 
 Copy `backend/.env.example` to `backend/.env` and fill in one provider:
@@ -242,7 +219,14 @@ Open **http://localhost:5173**. The first start creates `backend/netracare.db` f
 | Staff | Any name |
 | Doctor | Pick a name from the list |
 
-## 4. Clinic rules (Iteration 1, plus doctor leave)
+
+---
+
+# For developers
+
+Sections 7 to 10 are reference material: the clinic rules, the API, the data and settings, and the files.
+
+## 7. Clinic rules (Iteration 1, plus doctor leave)
 
 Checked in this order, after the red-flag check. Each refusal has a short code and a plain sentence.
 
@@ -266,7 +250,7 @@ Checked in this order, after the red-flag check. Each refusal has a short code a
 
 New in Iteration 2: `REASON_REQUIRED`, `REASON_TOO_LONG`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `RED_FLAG_CHECK_FAILED`.
 
-## 5. API
+## 8. API
 
 All paths start with `/api` in the browser (the web server removes it before calling FastAPI). Try them at `/docs`.
 Protected calls need the header `Authorization: Bearer <token>`.
@@ -314,7 +298,7 @@ When a rule is broken the reply is HTTP 409 like this (a red-flag booking that i
 ```
 Other errors: 401 not logged in, 403 not allowed for your role, 404 not found, 422 bad input, 503 the red-flag check could not run.
 
-## 6. Data and settings
+## 9. Data and settings
 
 | Data pack | File | Rows | Used for |
 |---|---|---|---|
@@ -368,52 +352,17 @@ The four data pack folders are copied exactly as given, including their `.DS_Sto
 
 Plus the key for your provider: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or `NVIDIA_API_KEY`.
 
-## 7. Tests and results
-
-**No fake model.** Every test that needs an AI answer calls the real model from your `.env`, so the tests need your key and take a while
-(every booking and chat message is a real call). If no key is found, the run stops with a clear message instead of passing silently.
-A failing model is produced the real way: no key, a model name that does not exist, or a timeout too short for any reply.
-Plain-code logic (building sources, the fixed "I don't know", the date checks on a summary, choosing between API keys) is tested by calling that code directly.
-
+### Run the tests yourself
 ```bash
 cd backend
 pip install -r requirements-dev.txt
 python -m pytest -q                                          # everything except the two scorings below
-python -m pytest tests/test_chat_live.py -v -s               # the 20 questions + 20 routing samples of data pack 3, asked of the agent, with a score
-python -m pytest tests/test_agent_scenarios_live.py -v -s    # the 24 scenarios of data pack 4, checked against the database
+python -m pytest tests/test_chat_live.py -v -s               # the 20 questions + 20 problems, with a score
+python -m pytest tests/test_agent_scenarios_live.py -v -s    # the 24 booking chats, checked against the database
 ```
+The tests need your AI key and take a while, because every answer is a real call.
 
-**How the AI is checked (the evals).** Each check uses a labelled list from the data packs, so the answer is compared with a known right answer:
-
-| List (data pack) | What it holds | What is measured |
-|---|---|---|
-| `rule_tests.csv` (1) | 38 booking cases with the expected rule and reason code | The clinic rules, case by case |
-| `reason_samples.csv` (2) + 10 hard cases of my own | 45 booking reasons labelled red flag or not (including Hindi, Hinglish, typos, long and unclear ones) | Missed red flags, wrong category, false alarms |
-| `questions.csv` (3) | 20 patient questions with the expected source; Q16 to Q20 should get "I don't know" | Right answer, right source, no sources on "I don't know" |
-| `routing_samples.csv` (3) | 20 problems in the patient's own words, labelled with the right speciality | Is the right speciality and doctor named, and is no condition named |
-| `agent_scenarios.csv` (4) | 24 chat scenarios on a fixed clock | The tools called, the booking made in the database, and the reply |
-| `leave_scenarios.csv` (4) | 5 doctor-leave cases | The rebooking proposed by the code |
-
-### Results (real model, NVIDIA `nemotron-3.5-lightning-30b-a3b`)
-
-| Check | Result | Notes |
-|---|---|---|
-| Booking agent scenarios (24, checked against the database) | **24 of 24 passed** | Tools called, booking made and reply are all checked |
-| Chat questions (20, with sources) | **20 of 20 passed** | Right answer and source, or the fixed "I don't know" |
-| Routing samples R01 to R10 (target: at least 9) | **9 of 10 correct** | R06 ("sandy and tired eyes after the laptop") sometimes goes to General instead of Dry eye; it passed 2 of 3 repeats |
-| Routing samples R11 to R20 | **10 of 10 passed** | Includes the Hinglish message R19 and the non-eye message R20 |
-| Red-flag check on the 35 labelled reasons | **0 missed, 0 wrong category, 0 false alarms** | Passed again in the latest full suite run |
-| 10 hard cases of my own (Hindi, Hinglish, typos, long) | **10 of 10 correct, 0 false alarms** | Passed again in the latest full suite run |
-| Same 45 red-flag cases on the main model | **45 of 45 correct** | `compare_models.py` can run other models the same way |
-| Full test suite (rules, API, tools, agent, search, 39 rule cases, key and retry logic, doctor-leave scenarios) | **279 passed, 1 failed** | The one failure was a dropped network connection on the test computer; it passed when run again |
-| Real browser check of the booking agent (Chrome, fixed clock, a copy of the database) | **22 of 22 passed** | Confirmation card, nothing booked until Confirm, move in the same chat, No, sources, "I don't know", a refusal the agent explains, a red flag with its urgent case, doctor leave with the rebooking. No server, page or console errors |
-| Real browser check of the home page | **40 of 40 passed** | At 1280, 820 and 360 px: exact wording, layout, colours, contrast of at least 4.5 to 1, focus outlines |
-| Real browser checks of Iterations 1, 2 and 3 | **All passed** | Iteration 1: 7 of 7. Iteration 2: 9 of 9. Iteration 3: 8 of 8 |
-
-The AI is not perfectly consistent, so a repeat run can differ by one check. The numbers come from the latest complete run of each kind. A few small prompt and
-retry changes were made after the scenario and chat runs; the browser check ran on the final code.
-
-## 8. Project layout
+## 10. Project files
 
 ```
 backend/
