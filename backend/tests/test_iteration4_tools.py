@@ -28,9 +28,11 @@ def conn_():
 
 
 # ======================================================== the tools as the model sees them
-def test_there_are_exactly_the_seven_tools_each_with_a_clear_name_and_description():
+def test_there_are_exactly_the_nine_tools_each_with_a_clear_name_and_description():
+    # the seven of the handout, plus the two for the patient's choice of a new time after doctor leave (a stretch goal)
     assert [t.name for t in tools.TOOLS] == ["search_clinic_docs", "list_doctors", "find_slots", "my_appointments",
-                                             "book_appointment", "cancel_appointment", "reschedule_appointment"]
+                                             "book_appointment", "cancel_appointment", "reschedule_appointment",
+                                             "my_rebooking_options", "choose_rebooking"]
     assert all(len(t.description.strip()) > 40 for t in tools.TOOLS)
 
 
@@ -38,7 +40,7 @@ def test_the_patient_id_is_never_a_tool_argument_so_the_model_cannot_act_for_som
     for t in tools.TOOLS:
         assert "patient_id" not in t.args and "patient" not in " ".join(t.args), t.name
         assert "config" not in t.args  # the graph config is injected, not offered to the model
-    assert set(tools.ACTION_TOOLS) == {"book_appointment", "cancel_appointment", "reschedule_appointment"}
+    assert set(tools.ACTION_TOOLS) == {"book_appointment", "cancel_appointment", "reschedule_appointment", "choose_rebooking"}
 
 
 def test_every_tool_argument_is_typed():
@@ -49,6 +51,8 @@ def test_every_tool_argument_is_typed():
     assert set(schemas["book_appointment"]) == {"doctor_id", "speciality", "visit_type", "date", "start_time", "reason"}
     assert set(schemas["cancel_appointment"]) == {"appointment_id"}
     assert set(schemas["reschedule_appointment"]) == {"appointment_id", "doctor_id", "date", "start_time"}
+    assert set(schemas["choose_rebooking"]) == {"rebooking_id", "doctor_id", "date", "start_time"}
+    assert set(schemas["my_rebooking_options"]) == set()
 
 
 # ======================================================== read-only tools

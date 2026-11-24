@@ -8,9 +8,11 @@
 The LLM never decides a booking. It only says whether a reason looks like a red flag.
 Provider, model, key and timeout come from .env (see .env.example), never from the code.
 """
+import asyncio
 import itertools
 import os
 import threading
+import weakref
 import time
 import random
 import re
@@ -99,6 +101,37 @@ def candidates() -> list[tuple[Optional[str], Optional[str]]]:
     return out
 
 
+_calls = 0
+_calls_lock = threading.Lock()
+
+
+def call_count() -> int:
+    """How many AI model objects have been built so far in this process. Every AI call (and every retry) builds one, so the difference between two
+    readings is the number of AI calls made in between. Used to measure and compare (compare_agents.py), never to decide anything."""
+    return _calls
+
+
+_loop_clients: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _async_http_client(timeout: float):
+    """One async HTTP client PER running event loop (None when no loop is running).
+
+    The AI library otherwise shares one async client for the whole process; that client is tied to the event loop it was first used on, so a
+    second loop (for example one request after another in a test client, or a server that restarts its loop) would meet a closed connection.
+    A client per loop is always safe, and on a normal server (one loop) it is still one shared client with connection reuse."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    client = _loop_clients.get(loop)
+    if client is None:
+        import httpx
+        client = httpx.AsyncClient(timeout=timeout)
+        _loop_clients[loop] = client
+    return client
+
+
 def get_model(temperature: float, provider: Optional[str] = None, model: Optional[str] = None) -> BaseChatModel:
     """Build the chat model. With no arguments: the main model from .env. `provider`/`model` pick a backup from LLM_FALLBACK_MODELS."""
     provider = (provider or os.environ.get("LLM_PROVIDER", "openai")).strip().lower()
@@ -108,6 +141,9 @@ def get_model(temperature: float, provider: Optional[str] = None, model: Optiona
     api_key = next_api_key(key_var)
     if not api_key:
         raise LLMUnavailable(f"{key_var} is not set.")
+    global _calls
+    with _calls_lock:
+        _calls += 1
     model = (model or os.environ.get("LLM_MODEL", "")).strip() or default_model
     timeout = float(os.environ.get("LLM_TIMEOUT", "20"))
     # Retries (default 4, with the client's own back-off) cover short provider hiccups such as HTTP 429 "too many requests". Every attempt still has its own timeout,
@@ -115,16 +151,22 @@ def get_model(temperature: float, provider: Optional[str] = None, model: Optiona
     retries = max(0, int(os.environ.get("LLM_MAX_RETRIES", "4")))
     if provider == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model, api_key=api_key, temperature=temperature, timeout=timeout, max_retries=retries)
+        return ChatOpenAI(model=model, api_key=api_key, temperature=temperature, timeout=timeout, max_retries=retries,
+                          **_async_client_kwargs(timeout))
     if provider == "nvidia":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=model, api_key=api_key, base_url=os.environ.get("NVIDIA_BASE_URL", NVIDIA_BASE_URL),
-                          temperature=temperature, timeout=timeout, max_retries=retries)
+                          temperature=temperature, timeout=timeout, max_retries=retries, **_async_client_kwargs(timeout))
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model=model, api_key=api_key, temperature=temperature, timeout=timeout, max_retries=retries)
     from langchain_google_genai import ChatGoogleGenerativeAI
     return ChatGoogleGenerativeAI(model=model, google_api_key=api_key, temperature=temperature, timeout=timeout, max_retries=retries)
+
+
+def _async_client_kwargs(timeout: float) -> dict:
+    client = _async_http_client(timeout)
+    return {"http_async_client": client} if client is not None else {}
 
 
 def _is_rate_limited(e: Exception) -> bool:
@@ -133,6 +175,25 @@ def _is_rate_limited(e: Exception) -> bool:
     text = str(e)
     return (any(code in text for code in ("429", "502", "503", "504")) or "Bad Gateway" in text or "Connection error" in text
             or type(e).__name__ in ("RateLimitError", "OpenAIRateLimitError", "InternalServerError"))
+
+
+def _key_count() -> int:
+    try:
+        return max(1, len(api_keys(_PROVIDERS[os.environ.get("LLM_PROVIDER", "openai").strip().lower()][0])))
+    except KeyError:
+        return 1
+
+
+async def ainvoke_with_backoff(call):
+    """The async twin of `invoke_with_backoff`: `call` makes a coroutine. While it waits, the server keeps serving everyone else."""
+    waits = [float(x) for x in os.environ.get("LLM_RATE_LIMIT_WAITS", "4,8,16").split(",") if x.strip()]
+    for attempt in range(len(waits) + 1):
+        try:
+            return await call()
+        except Exception as e:
+            if not _is_rate_limited(e) or attempt == len(waits):
+                raise
+            await asyncio.sleep(waits[attempt] / _key_count())
 
 
 def invoke_with_backoff(call):
@@ -145,8 +206,7 @@ def invoke_with_backoff(call):
         except Exception as e:
             if not _is_rate_limited(e) or attempt == len(waits):
                 raise
-            n_keys = max(1, len(api_keys(_PROVIDERS[os.environ.get("LLM_PROVIDER", "openai").strip().lower()][0])))
-            time.sleep(waits[attempt] / n_keys)  # with more keys the next try is on another key, so the wait is shorter
+            time.sleep(waits[attempt] / _key_count())  # with more keys the next try is on another key, so the wait is shorter
 
 
 def run_chain(build, inputs: dict):
@@ -305,6 +365,23 @@ def check_red_flags(text: str) -> RedFlagResult:
         except Exception as e:
             failures.append(f"{prov or 'main'}:{model or ''} {type(e).__name__}: {str(e)[:120]}")
     if result is None:  # EVERY model failed: the booking must not go ahead without the check
+        raise RedFlagCheckError(" | ".join(failures))
+    return normalise_red_flag(result)
+
+
+async def acheck_red_flags(text: str) -> RedFlagResult:
+    """The async twin of `check_red_flags` (same prompt, same models, same safe refusal), used by the async chat and booking endpoints."""
+    safe_text = strip_reason_tags(text)
+    failures = []
+    result = None
+    for prov, model in candidates():
+        try:
+            result = await ainvoke_with_backoff(
+                lambda: (_RED_FLAG_PROMPT | get_model(0, prov, model) | _red_flag_parser).ainvoke({"reason": safe_text}))
+            break
+        except Exception as e:
+            failures.append(f"{prov or 'main'}:{model or ''} {type(e).__name__}: {str(e)[:120]}")
+    if result is None:
         raise RedFlagCheckError(" | ".join(failures))
     return normalise_red_flag(result)
 

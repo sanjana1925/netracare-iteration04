@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from datetime import date as Date, timedelta
 
+from . import events
 from . import config, rules
 from .rules import Refusal
 
@@ -59,7 +60,9 @@ def clean_reason(reason) -> str:
 def book(conn, patient_id, doctor_id, speciality, visit_type, date, start, reason, urgent=False) -> str:
     with transaction(conn):
         rules.check_booking(conn, patient_id, doctor_id, speciality, visit_type, date, start)
-        return _insert(conn, patient_id, doctor_id, speciality, visit_type, date, start, reason, urgent)
+        new_id = _insert(conn, patient_id, doctor_id, speciality, visit_type, date, start, reason, urgent)
+    events.publish("appointments", change="booked")   # after the change is saved
+    return new_id
 
 
 def _now_iso() -> str:
@@ -80,7 +83,9 @@ def request_approval(conn, appt, action: str, new=None) -> int:
             "INSERT INTO approvals (appointment_id,patient_id,action,new_doctor_id,new_speciality,new_visit_type,new_date,"
             "new_start_time,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (appt["appointment_id"], appt["patient_id"], action, d, sp, vt, date, start, _now_iso()))
-        return cur.lastrowid
+        new_id = cur.lastrowid
+    events.publish("approval", change="requested")   # after the change is saved
+    return new_id
 
 
 def cancel(conn, appointment_id, role, acting_patient_id) -> None:
@@ -89,6 +94,7 @@ def cancel(conn, appointment_id, role, acting_patient_id) -> None:
             appt = get_appointment(conn, appointment_id)
             rules.check_cancel(appt, role, acting_patient_id)
             conn.execute("UPDATE appointments SET status='cancelled' WHERE appointment_id=?", (appointment_id,))
+        events.publish("appointments", change="cancelled")
     except Refusal as r:
         if r.code == "INSIDE_2_HOURS" and role == "patient":
             r.extra["approval_id"] = request_approval(conn, get_appointment(conn, appointment_id), "cancel")
@@ -107,8 +113,10 @@ def reschedule(conn, appointment_id, role, acting_patient_id, doctor_id, special
                                 ignore_appointment_id=appointment_id)
             conn.execute("UPDATE appointments SET status='cancelled' WHERE appointment_id=?", (appointment_id,))
             # the reason (and Urgent tag) were already checked when first booked, so they carry over
-            return _insert(conn, appt["patient_id"], doctor_id, speciality, visit_type, date, start,
-                           appt["reason"], bool(appt["urgent"]))
+            new_id = _insert(conn, appt["patient_id"], doctor_id, speciality, visit_type, date, start,
+                             appt["reason"], bool(appt["urgent"]))
+        events.publish("appointments", change="rescheduled")
+        return new_id
     except Refusal as r:
         if r.code == "INSIDE_2_HOURS" and role == "patient":
             appt = get_appointment(conn, appointment_id)
@@ -137,6 +145,7 @@ def complete(conn, appointment_id, doctor_id, note) -> None:
         if appt["status"] != "booked":
             raise Refusal("NOT_ACTIVE", f"That appointment is already {appt['status']}.")
         conn.execute("UPDATE appointments SET status='completed', doctor_note=? WHERE appointment_id=?", (note, appointment_id))
+    events.publish("appointments", change="completed")
 
 
 # ---------- urgent cases (R4) ----------
@@ -155,7 +164,9 @@ def save_urgent_case(conn, patient_id, reason, category, why, source="booking") 
             return same["urgent_id"]
         cur = conn.execute("INSERT INTO urgent_cases (patient_id,reason,category,why,created_at,source) VALUES (?,?,?,?,?,?)",
                            (patient_id, reason, category, why, config.clinic_now().isoformat(timespec="minutes"), source))
-        return cur.lastrowid
+        new_id = cur.lastrowid
+    events.publish("urgent_case", category=category)
+    return new_id
 
 
 def list_urgent_cases(conn, include_seen=False):
@@ -294,6 +305,7 @@ def _decide_approval(conn, approval_id, staff_name, status, result):
     with transaction(conn):
         conn.execute("UPDATE approvals SET status=?, decided_at=?, decided_by=?, result=? WHERE approval_id=?",
                      (status, _now_iso(), staff_name, result, approval_id))
+    events.publish("approval", change=status)
     return dict(conn.execute(_APPROVAL_SQL + "WHERE ap.approval_id=?", (approval_id,)).fetchone())
 
 

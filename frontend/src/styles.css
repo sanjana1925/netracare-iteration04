@@ -341,3 +341,14 @@ select.sel.OPD { background: var(--sage); } select.sel.SURGERY { background: var
   .hero-title { margin-top: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { .hero-bento * { transition: none !important; animation: none !important; } }
+
+/* the Staff dashboard's "live" note */
+.live-pill { margin: 0 0 var(--s3); font-size: .85rem; font-weight: 600; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; }
+.live-pill::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+.live-pill.on { color: var(--sage-ink); }
+.live-pill.on::before { background: var(--sage-ink); }
+
+/* the patient's choice between one assistant and the two-assistant team */
+.mode-pick { display: inline-flex; align-items: center; gap: 8px; font-size: .85rem; font-weight: 600; color: var(--muted); }
+.mode-pick select { min-height: 36px; padding: 4px 10px; border-radius: var(--pill); font-size: .85rem; background: var(--surface); }
+@media (max-width: 640px) { .mode-pick { display: none; } }

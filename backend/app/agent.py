@@ -19,6 +19,7 @@ Who decides what:
 Memory: a LangGraph InMemorySaver keyed by thread_id. The browser sends only the new message and the thread_id.
 The agent sees at most the last 20 messages. Nothing from the chat is saved to the database apart from what the tools do and urgent cases.
 """
+import asyncio
 import json
 import logging
 import re
@@ -26,7 +27,7 @@ from datetime import timedelta
 from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -73,6 +74,14 @@ def build_system_prompt(patient_id: str) -> str:
                         (patient_id, now.date().isoformat()))]
         # past visits: date, doctor, speciality, visit type ONLY. No doctor notes and no health profile: the agent doesn't need them.
         past = [f"- {v['date']}: {v['speciality']} with {v['doctor_name']} ({v['visit_type']})" for v in hist["visits"]]
+        # appointments a doctor's leave moved, waiting for this patient's choice (stretch goal)
+        moved = [f"- rebooking {r['rebooking_id']}: your {r['speciality']} appointment on {r['odate']} {r['ostart']} was moved because the doctor is on leave; "
+                 f"the proposed new time is {r['ndate']} {r['nstart']} with {r['ndoctor']}"
+                 for r in conn.execute(
+                     "SELECT rb.rebooking_id, o.speciality AS speciality, o.date AS odate, o.start_time AS ostart, n.date AS ndate, "
+                     "n.start_time AS nstart, nd.name AS ndoctor FROM rebookings rb JOIN appointments o ON o.appointment_id=rb.original_appointment_id "
+                     "JOIN appointments n ON n.appointment_id=rb.proposed_appointment_id JOIN doctors nd ON nd.doctor_id=n.doctor_id "
+                     "WHERE rb.patient_id=? AND rb.status='pending' ORDER BY rb.rebooking_id", (patient_id,))]
     finally:
         conn.close()
     return f"""You are the NetraCare patient assistant. NetraCare is an eye clinic. You help the logged-in patient find free times and book, cancel
@@ -88,6 +97,8 @@ Upcoming appointments:
 {chr(10).join(upcoming) or '(none)'}
 Past visits:
 {chr(10).join(past) or '(none)'}
+Moved appointments waiting for the patient's choice:
+{chr(10).join(moved) or '(none)'}
 
 HOW TO WORK
 - Use tools. Find free times with find_slots BEFORE offering any, and NEVER offer a time you have not seen in a find_slots result.
@@ -142,6 +153,9 @@ HOW TO WORK
 - When the patient wants to CANCEL an appointment and book another one IN ITS PLACE ("cancel it and book me with Dr. X on <day> instead"),
   that is ONE reschedule: use find_slots, then reschedule_appointment (one confirmation). NEVER call cancel_appointment in that case, and
   never call book_appointment for it: use only reschedule_appointment.
+- If the patient has a moved appointment waiting (see above), tell them about it in your first reply of the chat and offer to show their choices.
+  To show them call my_rebooking_options and list ONLY what it returns: the proposed time and the other times. When they pick one, call
+  choose_rebooking with the rebooking_id and that exact doctor_id, date and start_time. Do not use reschedule_appointment for this.
 - Never offer a day earlier than the day the patient asked for. When they name a date, look from that date forward (if it is a holiday or a
   closed day, the next open day after it, not an earlier one).
 - If the patient has exactly ONE upcoming appointment and asks to change its time or day ("make it the afternoon", "a different day",
@@ -186,13 +200,35 @@ def redflag_node(state: ChatState, config: RunnableConfig) -> dict:  # LangGraph
     except llm.RedFlagCheckError:
         return {"messages": [AIMessage(content=CHECK_FAILED)], "halt": True, "emergency": None, "kind": "check_failed"}
     if flag.red_flag:
-        conn = db.connect()
-        try:
-            urgent_id = service.save_urgent_case(conn, pid, _text(last.content), flag.category, flag.why, source="chat")
-        finally:
-            conn.close()
-        return {"messages": [AIMessage(content=llm.EMERGENCY_RESPONSE)], "halt": True, "kind": "emergency",
-                "emergency": {"message": llm.EMERGENCY_RESPONSE, "category": flag.category, "urgent_id": urgent_id}}
+        urgent_id = _save_chat_urgent(pid, _text(last.content), flag)
+        return _emergency_update(flag, urgent_id)
+    return {"halt": False, "emergency": None, "kind": None}
+
+
+def _save_chat_urgent(pid: str, text: str, flag) -> int:
+    conn = db.connect()
+    try:
+        return service.save_urgent_case(conn, pid, text, flag.category, flag.why, source="chat")
+    finally:
+        conn.close()
+
+
+def _emergency_update(flag, urgent_id: int) -> dict:
+    return {"messages": [AIMessage(content=llm.EMERGENCY_RESPONSE)], "halt": True, "kind": "emergency",
+            "emergency": {"message": llm.EMERGENCY_RESPONSE, "category": flag.category, "urgent_id": urgent_id}}
+
+
+async def aredflag_node(state: ChatState, config: RunnableConfig) -> dict:
+    """The same red-flag step, written async: while it waits for the AI model, the server keeps serving everyone else."""
+    last = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
+    pid = config["configurable"]["patient_id"]
+    try:
+        flag = await llm.acheck_red_flags(_text(last.content))
+    except llm.RedFlagCheckError:
+        return {"messages": [AIMessage(content=CHECK_FAILED)], "halt": True, "emergency": None, "kind": "check_failed"}
+    if flag.red_flag:
+        urgent_id = await asyncio.to_thread(_save_chat_urgent, pid, _text(last.content), flag)
+        return _emergency_update(flag, urgent_id)
     return {"halt": False, "emergency": None, "kind": None}
 
 
@@ -211,7 +247,11 @@ def agent_node(state: ChatState, config: RunnableConfig) -> dict:
     reply = llm.invoke_with_backoff(ask)
     if not _text(reply.content).strip() and not (getattr(reply, "tool_calls", None) or []):
         reply = llm.invoke_with_backoff(ask)  # the model sometimes returns nothing at all: ask once more before giving up
-    # One action at a time: if the model asked for several changes, keep only the first (read-only calls may all stay).
+    return {"messages": [_one_action_at_a_time(reply)]}
+
+
+def _one_action_at_a_time(reply):
+    """One action at a time: if the model asked for several changes, keep only the first (read-only calls may all stay)."""
     calls = getattr(reply, "tool_calls", None) or []
     seen_action, kept = False, []
     for c in calls:
@@ -222,7 +262,18 @@ def agent_node(state: ChatState, config: RunnableConfig) -> dict:
         kept.append(c)
     if len(kept) != len(calls):
         reply = AIMessage(content=reply.content, tool_calls=kept, id=reply.id)
-    return {"messages": [reply]}
+    return reply
+
+
+async def aagent_node(state: ChatState, config: RunnableConfig) -> dict:
+    """The same agent step, written async: the model is called with `ainvoke`, so a slow reply does not hold up other users."""
+    pid = config["configurable"]["patient_id"]
+    prompt = [SystemMessage(content=await asyncio.to_thread(build_system_prompt, pid))] + _window(state["messages"])
+    ask = lambda: llm.get_model(0).bind_tools(toolbox.TOOLS).ainvoke(prompt)  # a new model each try, so a retry takes the next key
+    reply = await llm.ainvoke_with_backoff(ask)
+    if not _text(reply.content).strip() and not (getattr(reply, "tool_calls", None) or []):
+        reply = await llm.ainvoke_with_backoff(ask)
+    return {"messages": [_one_action_at_a_time(reply)]}
 
 
 def _after_redflag(state: ChatState) -> str:
@@ -231,8 +282,8 @@ def _after_redflag(state: ChatState) -> str:
 
 def build_graph(checkpointer):
     g = StateGraph(ChatState)
-    g.add_node("redflag", redflag_node)
-    g.add_node("agent", agent_node)
+    g.add_node("redflag", RunnableLambda(redflag_node, afunc=aredflag_node))   # a sync and an async twin: the sync one for scripts, the async one for the server
+    g.add_node("agent", RunnableLambda(agent_node, afunc=aagent_node))
     g.add_node("tools", ToolNode(toolbox.TOOLS))
     g.add_edge(START, "redflag")
     g.add_conditional_edges("redflag", _after_redflag, {"end": END, "agent": "agent"})
@@ -242,21 +293,35 @@ def build_graph(checkpointer):
 
 
 _graph = None
+_sup_graph = None
 _saver = None
 
 
-def get_graph():
-    global _graph, _saver
-    if _graph is None:
+def get_graph(mode: str = "single"):
+    """The single agent (default) or, for mode="supervisor", the team of an information agent and a booking agent (see supervisor.py).
+    Both keep their conversations in the same in-memory store; the supervisor's thread ids are prefixed, so the two never mix."""
+    global _graph, _sup_graph, _saver
+    if _saver is None:
         _saver = InMemorySaver()
+    if mode == "supervisor":
+        if _sup_graph is None:
+            from . import supervisor
+            _sup_graph = supervisor.build_graph(_saver)
+        return _sup_graph
+    if _graph is None:
         _graph = build_graph(_saver)
     return _graph
 
 
+def _cfg(patient_id: str, thread_id: str, mode: str = "single") -> dict:
+    prefix = "sup:" if mode == "supervisor" else ""
+    return {"configurable": {"thread_id": f"{prefix}{patient_id}:{thread_id}", "patient_id": patient_id}, "recursion_limit": STEP_LIMIT}
+
+
 def reset() -> None:
     """Forget every conversation (used by tests; a server restart does the same)."""
-    global _graph, _saver
-    _graph = _saver = None
+    global _graph, _sup_graph, _saver
+    _graph = _sup_graph = _saver = None
 
 
 def draw_graph_mermaid() -> str:
@@ -288,12 +353,12 @@ def clean_thread_id(thread_id: str) -> str:
     return thread_id
 
 
-def run_turn(patient_id: str, thread_id: str, message: Optional[str] = None, confirm: Optional[bool] = None) -> dict:
+def run_turn(patient_id: str, thread_id: str, message: Optional[str] = None, confirm: Optional[bool] = None, mode: str = "single") -> dict:
     """Run one chat turn. Returns {kind, reply, sources, emergency, pending_action, tool_calls}.
 
     The thread is namespaced by the patient's ID taken from the login, so one patient can never reach another's conversation."""
-    graph = get_graph()
-    cfg = {"configurable": {"thread_id": f"{patient_id}:{thread_id}", "patient_id": patient_id}, "recursion_limit": STEP_LIMIT}
+    graph = get_graph(mode)
+    cfg = _cfg(patient_id, thread_id, mode)
     try:
         waiting = _pending(graph, cfg)
         if confirm is not None and not waiting:
@@ -313,6 +378,138 @@ def run_turn(patient_id: str, thread_id: str, message: Optional[str] = None, con
         log.exception("agent turn failed")  # the patient sees a friendly message; the traceback goes to the server log
         _drop_thread(cfg)  # a half-finished tool exchange must not poison the next turn
         return _result("error", rag.CHAT_ERROR)
+
+
+# How many chat turns are being worked on at this very moment, and the most there have been at once. (Used to PROVE that chats do not wait
+# for each other: if one turn blocked the server, a second could never start before the first finished and the maximum would stay at 1.)
+_in_flight = 0
+max_in_flight = 0
+
+
+def reset_concurrency() -> None:
+    global _in_flight, max_in_flight
+    _in_flight = max_in_flight = 0
+
+
+class _Counting:
+    def __enter__(self):
+        global _in_flight, max_in_flight
+        _in_flight += 1
+        max_in_flight = max(max_in_flight, _in_flight)
+
+    def __exit__(self, *exc):
+        global _in_flight
+        _in_flight -= 1
+
+
+async def arun_turn(patient_id: str, thread_id: str, message: Optional[str] = None, confirm: Optional[bool] = None, mode: str = "single") -> dict:
+    """The async twin of `run_turn`: same steps, same safe behaviour, but it awaits the graph, so many chats can run at the same time."""
+    with _Counting():
+        return await _arun_turn(patient_id, thread_id, message, confirm, mode)
+
+
+async def _arun_turn(patient_id: str, thread_id: str, message: Optional[str], confirm: Optional[bool], mode: str) -> dict:
+    graph = get_graph(mode)
+    cfg = _cfg(patient_id, thread_id, mode)
+    try:
+        waiting = _pending(graph, cfg)
+        if confirm is not None and not waiting:
+            return _result("error", "There is nothing waiting for your confirmation.")
+        if waiting and confirm is None:
+            await graph.ainvoke(Command(resume=False), cfg)  # a typed message while an action waits counts as No: nothing changes
+        if confirm is not None:
+            await graph.ainvoke(Command(resume=bool(confirm)), cfg)
+        else:
+            await graph.ainvoke({"messages": [HumanMessage(content=message)]}, cfg)
+        return _compose(graph, cfg)
+    except GraphRecursionError:
+        log.warning("agent hit the step limit")
+        _drop_thread(cfg)
+        return _result("error", STEP_LIMIT_MESSAGE)
+    except Exception:
+        log.exception("agent turn failed")
+        _drop_thread(cfg)
+        return _result("error", rag.CHAT_ERROR)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Stretch goal: show the agent's progress while it works ("Checking Dr. Shah's free times…")
+# The same graph is run with stream_mode="updates": every time a step finishes, a short plain sentence is sent to the browser.
+# ---------------------------------------------------------------------------------------------------
+def _doctor_label(doctor_id) -> Optional[str]:
+    if not doctor_id:
+        return None
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT name FROM doctors WHERE doctor_id=?", (doctor_id,)).fetchone()
+    finally:
+        conn.close()
+    return row["name"] if row else None
+
+
+def progress_text(name: str, args: dict) -> str:
+    """One short sentence for a tool the agent is about to run. Only what the patient already said or the doctor's name: no patient data."""
+    args = args or {}
+    if name == "find_slots":
+        who = _doctor_label(args.get("doctor_id"))
+        if who:
+            return f"Checking {who}'s free times…"
+        return f"Checking free {args['speciality']} times…" if args.get("speciality") else "Checking free times…"
+    return {
+        "search_clinic_docs": "Looking in the clinic documents…",
+        "list_doctors": "Checking the list of doctors…",
+        "my_appointments": "Looking at your appointments…",
+        "book_appointment": "Getting your booking ready…",
+        "cancel_appointment": "Getting the cancellation ready…",
+        "reschedule_appointment": "Getting the change ready…",
+        "my_rebooking_options": "Looking at your moved appointment…",
+        "choose_rebooking": "Getting your new time ready…",
+    }.get(name, "Working on it…")
+
+
+async def stream_graph(graph, cfg, payload, compose, labeller=progress_text, drop=None):
+    """Run one graph step-by-step and yield {"type": "step", "text": ...} while it works, then {"type": "final", ...} with the same result
+    the normal (non-streamed) call returns. A failure ends in the same friendly `final` as before."""
+    yield {"type": "step", "text": "Checking your message…"}
+    try:
+        async for chunk in graph.astream(payload, cfg, stream_mode="updates"):
+            for node, update in chunk.items():
+                if node == "agent" and isinstance(update, dict):
+                    for m in update.get("messages", []):
+                        for call in (getattr(m, "tool_calls", None) or []):
+                            yield {"type": "step", "text": labeller(call["name"], call.get("args"))}
+                elif node == "tools":
+                    yield {"type": "step", "text": "Reading the results…"}
+        yield {"type": "final", **compose(graph, cfg)}
+    except GraphRecursionError:
+        log.warning("agent hit the step limit")
+        (drop or _drop_thread)(cfg)
+        yield {"type": "final", **_result("error", STEP_LIMIT_MESSAGE)}
+    except Exception:
+        log.exception("agent turn failed")
+        (drop or _drop_thread)(cfg)
+        yield {"type": "final", **_result("error", rag.CHAT_ERROR)}
+
+
+async def astream_turn(patient_id: str, thread_id: str, message: Optional[str] = None, confirm: Optional[bool] = None, mode: str = "single"):
+    """The streamed twin of `arun_turn`: the same steps and the same final result, with progress sentences before it."""
+    graph = get_graph(mode)
+    cfg = _cfg(patient_id, thread_id, mode)
+    try:
+        waiting = _pending(graph, cfg)
+        if confirm is not None and not waiting:
+            yield {"type": "final", **_result("error", "There is nothing waiting for your confirmation.")}
+            return
+        if waiting and confirm is None:
+            await graph.ainvoke(Command(resume=False), cfg)  # a typed message while an action waits counts as No: nothing changes
+    except Exception:
+        log.exception("agent turn failed")
+        _drop_thread(cfg)
+        yield {"type": "final", **_result("error", rag.CHAT_ERROR)}
+        return
+    payload = Command(resume=bool(confirm)) if confirm is not None else {"messages": [HumanMessage(content=message)]}
+    async for event in stream_graph(graph, cfg, payload, _compose):
+        yield event
 
 
 def _result(kind, reply, sources=None, emergency=None, pending=None, tools=None) -> dict:

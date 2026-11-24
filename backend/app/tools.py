@@ -1,4 +1,4 @@
-"""The agent's seven tools. Each is a thin layer over the SAME functions the website's endpoints use.
+"""The agent's nine tools. Each is a thin layer over the SAME functions the website's endpoints use.
 
 Rules this file follows (handout R2):
   * A tool never re-checks a clinic rule itself and never writes to the database directly. It calls ops/service,
@@ -16,10 +16,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from . import config, db, ops, rag, rules, service
+from . import config, db, leave_flow, ops, rag, rules, service
 from .rules import DAYS, Refusal
 
-ACTION_TOOLS = {"book_appointment", "cancel_appointment", "reschedule_appointment"}  # these need the patient's confirmation
+ACTION_TOOLS = {"book_appointment", "cancel_appointment", "reschedule_appointment", "choose_rebooking"}  # these need the patient's confirmation
 
 
 def _patient_id(cfg: RunnableConfig) -> str:
@@ -318,4 +318,56 @@ def reschedule_appointment(appointment_id: str, doctor_id: str, date: str, start
         conn.close()
 
 
-TOOLS = [search_clinic_docs, list_doctors, find_slots, my_appointments, book_appointment, cancel_appointment, reschedule_appointment]
+# -------------------------------------------------------------------------------------------------------
+# Stretch goal: after a doctor's leave the PATIENT chooses the new time (the proposed one or two others), instead of waiting for Staff.
+# -------------------------------------------------------------------------------------------------------
+@tool
+def my_rebooking_options(config: RunnableConfig) -> str:
+    """If a doctor's leave moved one of the logged-in patient's appointments, show it: the new time that was proposed and up to two OTHER free times
+    to choose from. Read only. Use it when the patient has a moved appointment waiting and wants to choose a time."""
+    conn = db.connect()
+    try:
+        opts = ops.rebooking_options(conn, _patient_id(config))
+        if not opts:
+            return _json(result="none", message="You have no moved appointment waiting for a choice.")
+        for o in opts:
+            for slot in [o["proposed"]] + o["other_choices"]:
+                slot["weekday"] = DAYS[Date.fromisoformat(slot["date"]).weekday()]
+        return _json(result="ok", moved_appointments=opts)
+    finally:
+        conn.close()
+
+
+def do_choose_rebooking(conn, patient_id: str, rebooking_id: int, doctor_id: str, date: str, start_time: str) -> str:
+    try:
+        row = leave_flow.choose(conn, patient_id, rebooking_id, doctor_id, date, start_time)
+    except Refusal as r:
+        return _refused(r)
+    return _json(result="chosen", rebooking_id=rebooking_id, doctor=row["new_doctor"], date=row["new_date"], start_time=row["new_start"])
+
+
+@tool
+def choose_rebooking(rebooking_id: int, doctor_id: str, date: str, start_time: str, config: RunnableConfig) -> str:
+    """Choose the new time for a moved appointment. Give the rebooking_id and the exact doctor_id, date (YYYY-MM-DD) and start_time (HH:MM) of ONE
+    of the times returned by my_rebooking_options (the proposed time or one of the other choices). The patient is asked to confirm first."""
+    conn = db.connect()
+    try:
+        pid = _patient_id(config)
+        mine = [o for o in ops.rebooking_options(conn, pid) if o["rebooking_id"] == rebooking_id]
+        if not mine:
+            return _refused(Refusal("NOT_YOUR_REBOOKING", "There is no moved appointment of yours waiting for a choice.", http_status=403))
+        name = _doctor_name(conn, doctor_id)
+        if name is None:
+            return _refused(Refusal("DOCTOR_NOT_FOUND", "That doctor does not exist.", http_status=404))
+        o = mine[0]
+        summary = (f"Move your {o['speciality']} appointment (was {fmt_date(o['original']['date'])}, {fmt_time(o['original']['start_time'])}) to "
+                   f"{name}, {fmt_date(date)}, {fmt_time(start_time)}?")
+        if not _confirm("choose_rebooking", summary):
+            return _json(result="declined", message="The patient said no. Nothing was changed.")
+        return do_choose_rebooking(conn, pid, rebooking_id, doctor_id, date, start_time)
+    finally:
+        conn.close()
+
+
+TOOLS = [search_clinic_docs, list_doctors, find_slots, my_appointments, book_appointment, cancel_appointment, reschedule_appointment,
+         my_rebooking_options, choose_rebooking]

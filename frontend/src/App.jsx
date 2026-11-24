@@ -299,23 +299,46 @@ const SUGGESTIONS = [
   "What time do you open on Saturday?",
   "How much does cataract surgery cost?",
 ];
-const ACTION_TITLE = { book: "Book appointment", cancel: "Cancel appointment", reschedule: "Move appointment" };
+const STAFF_SUGGESTIONS = [
+  "What needs attention right now?",
+  "Show me today's appointments",
+  "Which urgent cases are waiting?",
+  "Find free Retina times this week",
+];
+const ACTION_TITLE = {
+  book: "Book appointment", cancel: "Cancel appointment", reschedule: "Move appointment", choose_rebooking: "Choose your new time",
+  staff_book: "Book for a patient", staff_cancel: "Cancel appointment", decide_approval: "Decide a request", decide_rebooking: "Decide a new time",
+  mark_urgent_seen: "Mark as seen",
+};
 
-function ChatPanel({ onChanged }) {
+/* One chat panel for two assistants: the patient's (default) and the Staff assistant (`staff`). The patient can also pick the two-assistant team. */
+function ChatPanel({ onChanged, staff = false }) {
+  const endpoint = staff ? "/staff/chat/stream" : "/chat/stream";
+  const [mode, setMode] = useState("single");       // patients only: "single" agent or the "supervisor" team (an information agent and a booking agent)
   const [thread, setThread] = useState(newThread);
   const [messages, setMessages] = useState([]);   // {role, content, kind, sources}
   const [pending, setPending] = useState(null);   // {summary, action}: a confirmation card is waiting
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");       // the agent's progress, one short sentence at a time ("Checking Dr. Shah's free times…")
   const logRef = React.useRef(null);
-  useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight; }, [messages, pending, busy]);
+  useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight; }, [messages, pending, busy, status]);
 
   async function post(body, userText) {
     setBusy(true);
+    setStatus("Checking your message…");
     if (userText) setMessages((m) => [...m, { role: "user", content: userText }]);
     setPending(null);
     try {
-      const r = await api("/chat", { method: "POST", body: { thread_id: thread, ...body } });
+      let r = null;
+      // Each progress sentence stays on screen for a moment (a quick lookup would otherwise flash by unread): they are shown one after another.
+      const queue = [];
+      let showing = false;
+      const flush = () => { if (showing || !queue.length) return; showing = true; setStatus(queue.shift()); setTimeout(() => { showing = false; flush(); }, 700); };
+      await streamEvents(endpoint, (ev) => { if (ev.type === "step") { queue.push(ev.text); flush(); } else if (ev.type === "final") r = ev; }, undefined,
+        { method: "POST", body: { thread_id: thread, ...(staff || mode === "single" ? {} : { mode }), ...body } });
+      for (let waited = 0; (showing || queue.length) && waited < 3000; waited += 100) await new Promise((res) => setTimeout(res, 100));   // let the last sentences be read
+      if (!r) throw new Error("The assistant did not answer. Please try again.");
       setMessages((m) => [...m, { role: "assistant", content: r.reply, kind: r.kind, sources: r.sources }]);
       setPending(r.pending_action || null);
       if (r.kind !== "pending") onChanged && onChanged(); // an action may have changed the appointments below
@@ -333,22 +356,34 @@ function ChatPanel({ onChanged }) {
   }
   const quick = (t) => { if (!busy) post({ message: t }, t); };
   useEffect(() => {  // a visitor who started with a symptom: send it now, through the normal red-flag check
-    const first = sessionStorage.getItem("nc_first_message");
+    const first = staff ? null : sessionStorage.getItem("nc_first_message");
     if (first) { sessionStorage.removeItem("nc_first_message"); post({ message: first }, first); }
   }, []); // eslint-disable-line
   const reset = () => { setThread(newThread()); setMessages([]); setPending(null); setText(""); };
 
   return (
     <div className="card chat">
-      <div className="fact-head"><h2><MessageCircle className="icon" aria-hidden="true" />Ask NetraCare</h2>
-        <button onClick={reset}><RefreshCw className="icon" aria-hidden="true" />New chat</button></div>
+      <div className="fact-head"><h2><MessageCircle className="icon" aria-hidden="true" />{staff ? "Staff assistant" : "Ask NetraCare"}</h2>
+        <span className="row" style={{ gap: 8 }}>
+          {!staff && (
+            <label className="mode-pick">Assistant
+              <select value={mode} onChange={(e) => { setMode(e.target.value); reset(); }} aria-label="Which assistant answers">
+                <option value="single">One assistant</option>
+                <option value="supervisor">Team: information + booking</option>
+              </select>
+            </label>
+          )}
+          <button onClick={reset}><RefreshCw className="icon" aria-hidden="true" />New chat</button>
+        </span></div>
       <div className="chat-log" aria-live="polite" ref={logRef}>
         {messages.length === 0 && (
           <div className="welcome">
             <LogoMark />
             <h3>How can I help today?</h3>
-            <p className="hint">Ask me to find free times, book, cancel or reschedule your appointments, or ask about timings, fees, what to bring and procedures. I always ask you to confirm before I change anything.</p>
-            <div className="suggest">{SUGGESTIONS.map((t) => <button key={t} onClick={() => quick(t)} disabled={busy}>{t}</button>)}</div>
+            <p className="hint">{staff
+              ? "Ask me what needs attention, to look at a day's appointments, find a patient, find free times, book for a patient, cancel, decide late requests and rebookings, or mark urgent cases seen. I always ask you to confirm before I change anything."
+              : "Ask me to find free times, book, cancel or reschedule your appointments, or ask about timings, fees, what to bring and procedures. I always ask you to confirm before I change anything."}</p>
+            <div className="suggest">{(staff ? STAFF_SUGGESTIONS : SUGGESTIONS).map((t) => <button key={t} onClick={() => quick(t)} disabled={busy}>{t}</button>)}</div>
           </div>
         )}
         {messages.map((m, i) => (
@@ -372,7 +407,7 @@ function ChatPanel({ onChanged }) {
         )}
         {busy && (
           <div className="msg assistant"><span className="av" aria-hidden="true"><Bot className="icon" /></span>
-            <div className="bubble assistant typing"><span className="dots" aria-hidden="true"><i /><i /><i /></span>Thinking…</div></div>
+            <div className="bubble assistant typing"><span className="dots" aria-hidden="true"><i /><i /><i /></span><span role="status">{status || "Thinking…"}</span></div></div>
         )}
       </div>
       <form className="chat-input" onSubmit={send}>
@@ -888,7 +923,26 @@ function StaffView({ user, doctors, today, notify }) {
     api(`/appointments?date=${today}&status=booked`).then((r) => setTodayCount(r.length)).catch(() => {});
   }, [date, doctorId, today]); // eslint-disable-line
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { const t = setInterval(() => api("/urgent-cases").then(setUrgent).catch(() => {}), 15000); return () => clearInterval(t); }, []);
+  // Live updates: the server pushes a small event the moment an urgent case, an approval, a rebooking or an appointment changes,
+  // and the dashboard then reads its own lists. There is no timer asking the server every few seconds any more.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    let stopped = false;
+    (async () => {
+      while (!stopped) {
+        try {
+          await streamEvents("/staff/events", (ev) => { if (ev.type === "hello") setLive(true); else if (ev.type !== "ping") loadRef.current(); }, ctrl.signal);
+        } catch { /* the server cannot be reached: try again below */ }
+        setLive(false);
+        if (stopped) break;
+        await new Promise((r) => setTimeout(r, 3000)); // the connection dropped: try again in 3 seconds
+      }
+    })();
+    return () => { stopped = true; ctrl.abort(); };
+  }, []);
   const loadPatients = useCallback(() => api("/patients").then(setPatients).catch(() => {}), []);
   useEffect(() => { loadPatients(); }, [loadPatients]);
 
@@ -925,10 +979,12 @@ function StaffView({ user, doctors, today, notify }) {
     { id: "book", label: "Book & register", icon: icon(CalendarPlus) },
     { id: "calendar", label: "Calendar", icon: icon(CalendarDays) },
     { id: "settings", label: "Clinic settings", icon: icon(Settings) },
+    { id: "assistant", label: "Assistant", icon: icon(Bot) },
     { id: "search", label: "Search debug", icon: icon(Search) },
   ];
   return (
     <>
+      <p className={`live-pill ${live ? "on" : ""}`} role="status">{live ? "Live: new cases and requests appear here at once" : "Reconnecting to live updates…"}</p>
       <div className="stats">
         <Stat icon={icon(Bell)} n={unseen} label="Unseen urgent cases" tone={unseen ? "alert" : "good"} />
         <Stat icon={icon(ClipboardList)} n={approvals.length} label="Late changes to approve" tone="warn" />
@@ -967,6 +1023,7 @@ function StaffView({ user, doctors, today, notify }) {
       </Panel>
       <Panel id="calendar" active={tab}><WeekCalendar doctors={doctors} today={today} /></Panel>
       <Panel id="settings" active={tab}><ClinicSettings doctors={doctors} today={today} notify={notify} /></Panel>
+      <Panel id="assistant" active={tab} keep><ChatPanel staff onChanged={load} /></Panel>
       <Panel id="search" active={tab}><SearchDebug /></Panel>
     </>
   );

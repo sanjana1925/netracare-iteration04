@@ -40,10 +40,12 @@ export async function api(path, { method = "GET", body } = {}) {
 
 /* Server-sent events (the streamed doctor summary). `onEvent` is called once per event as it arrives.
    Access is checked by the backend before the stream starts, so a refusal comes back as a normal error. */
-export async function streamEvents(path, onEvent, signal) {
+export async function streamEvents(path, onEvent, signal, options = {}) {
   let res;
   try {
-    res = await fetch(BASE + path, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal });
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    if (options.body) headers["Content-Type"] = "application/json";   // a POST that streams its answer (the chat)
+    res = await fetch(BASE + path, { method: options.method || "GET", headers, body: options.body ? JSON.stringify(options.body) : undefined, signal });
   } catch (e) {
     if (e.name === "AbortError") return;
     throw new ApiError("Cannot reach the clinic server. Is the backend running?", "NETWORK", false, 0);

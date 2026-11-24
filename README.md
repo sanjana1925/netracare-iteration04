@@ -69,7 +69,7 @@ Each step kept everything from the steps before it. This folder has all four ste
 - Staff can try the search themselves and see what it found.
 
 ### Step 4: a chat that books for you
-- The patient writes what they want. The assistant (built with LangGraph) looks up **real free times** using seven small tools.
+- The patient writes what they want. The assistant (built with LangGraph) looks up **real free times** using nine small tools.
 - Before it books, cancels or moves anything, it shows a **card with two buttons: Confirm and No.** Nothing changes until the patient presses Confirm. (This pause is a LangGraph feature called `interrupt`.)
 - It remembers the chat (LangGraph memory). "Actually, make it the afternoon" works.
 - It can only see and change **that patient's own** appointments.
@@ -77,11 +77,20 @@ Each step kept everything from the steps before it. This folder has all four ste
 - A new home page and one colour style on every page.
 - If the AI service is busy, the website waits and tries again. You can add a second key to share the work.
 
+### Step 4 extras: five more things the chat and the clinic can do
+- **The chat shows its progress.** While the assistant works, you see short sentences such as "Checking Dr. Shah's free times…" instead of a blank wait. (The server sends them live, using server-sent events.)
+- **Patients choose a new time after doctor leave.** If a doctor's leave moves a patient's appointment, the chat tells them. It shows the time the website proposed and **two other free times**. The patient picks one and presses Confirm. Staff no longer have to decide for every patient. (Staff can still decide.)
+- **Doctor leave runs as a LangGraph workflow.** It is a small graph that **pauses and waits** for each patient or Staff decision, and it **keeps its place in a SQLite file**. If the server restarts, it carries on where it stopped.
+- **A Staff assistant.** The front desk has its own chat helper (a second LangGraph agent). It can show what needs attention, look up a patient, list a day's appointments, find free times, **book for a patient**, cancel, approve or reject late requests and rebookings, and mark urgent cases as seen. Every change waits for Confirm, just like the patient chat.
+- **A supervisor team.** A patient can switch the chat to "Team: information + booking". A small router reads each message and passes it to an **information agent** (it can only look things up) or a **booking agent** (it has the appointment tools). The red-flag check still runs first, and every change still waits for Confirm.
+- **Live updates for Staff.** The Staff page no longer asks the server every 15 seconds. The server **pushes** a small message the moment something changes (a new urgent case, a late-change request, a rebooking or a booking). The AI calls on the server are also **async**, so a slow AI answer for one person does not hold up everyone else.
+
 ### Who can do what
 | | Patient | Staff | Doctor |
 |---|---|---|---|
 | Book, cancel, move own appointments | ✅ | ✅ (for anyone) | – |
-| Chat with the assistant | ✅ | – | – |
+| Chat with the assistant | ✅ | ✅ (the Staff assistant) | – |
+| Choose a new time after doctor leave | ✅ | ✅ (can also decide) | – |
 | See urgent cases and approve late changes | – | ✅ | – |
 | Search tool (see what the chat found) | – | ✅ | – |
 | Mark leave, write notes, see patient summaries | – | – | ✅ |
@@ -120,6 +129,40 @@ sequenceDiagram
     R->>R: Check every clinic rule
     R->>D: Save the appointment
     C-->>P: "Booked!"
+```
+
+**The supervisor team** (optional chat mode)
+
+```mermaid
+flowchart TD
+    M(["Patient message"]) --> R["Emergency check<br/>(plain code, always first)"]
+    R -->|"emergency"| X(["Emergency reply, nobody else answers"])
+    R -->|"ok"| S["Supervisor<br/>(one small AI call: info or booking?)"]
+    S -->|"info"| I["Information agent<br/>can only look things up"]
+    S -->|"booking"| B["Booking agent<br/>appointment tools + Confirm card"]
+    I --> A(["Answer with sources"])
+    B --> A
+```
+
+**Live updates and the leave workflow**
+
+```mermaid
+sequenceDiagram
+    participant D as Doctor
+    participant W as Leave workflow (LangGraph + SQLite)
+    participant S as Staff page
+    participant P as Patient chat
+    D->>W: Mark leave
+    W->>W: Cancel affected appointments, propose new times
+    W-->>S: Pushed message: "rebooking proposed" (no polling)
+    Note over W: The graph pauses and is saved to SQLite
+    alt Patient chooses
+        P->>W: Picks a time and presses Confirm
+    else Staff decide
+        S->>W: Approve or reject
+    end
+    W-->>S: Pushed message: "rebooking decided"
+    Note over W: Resumes once per decision, then ends when none are left
 ```
 
 **What the AI does and what the code does** (the AI is the NVIDIA model, the code is Python)
@@ -186,6 +229,22 @@ We never used a fake AI. Every test that needs an AI answer asks the real AI. We
 | A real browser using the booking chat (22 steps) | ✅ **22 of 22**: card, Confirm, No, move in the same chat, sources, "I don't know", a refusal explained, an emergency, doctor leave |
 | A real browser on the home page | ✅ **40 of 40** on a big screen, a tablet and a phone |
 | Real browser checks of steps 1, 2 and 3 | ✅ All passed (7 of 7, 9 of 9, 8 of 8) |
+| Everything that existed before, re-run after the async change (API, tools, agent, Iteration 2, keys, roles, rules) | ✅ **160 passed, 0 failed** |
+| Live Staff updates and async (pushed urgent case arrives before the patient's reply, the server answers others while a chat waits, two chats overlap) | ✅ **9 of 9** (the "two chats at once" check counts how many chats the server works on at the same moment, which reached 2) |
+| Doctor leave workflow and the patient's choice (pauses, any order, survives a restart, refused decisions do not touch it) | ✅ **12 of 12** (no AI call needed) |
+| Staff assistant tools, progress sentences, supervisor wiring | ✅ **13 of 13** (no AI call needed) |
+| The new chat features with the real AI (progress, patient chooses, Staff assistant reads and decides, Staff assistant books, supervisor routes and confirms, supervisor stops a red flag) | ✅ **7 of 7** (about 85 AI calls, none repeated) |
+| A real browser using the new screens (Staff page shows "Live", an urgent case reported in the patient chat appears on the Staff page by itself, progress sentences in the chat, the Staff assistant tab and its answer) | ✅ **14 of 14** (10 + 4) |
+| Final safety run of the Iteration 4 tests after the extras were added (agent, API, tools, async, stretch, keys) | ✅ **91 of 91** (the one stopwatch-based test was replaced by the counting test above) |
+
+**One agent or a team?** We ran the same six messages through the single agent and the supervisor team (`python compare_agents.py`, about 65 AI calls):
+
+| | Right | AI calls | Time |
+|---|---|---|---|
+| Single agent | 6 of 6 | 24 | 122 seconds |
+| Supervisor team | 4 of 6 | 31 | 203 seconds |
+
+The team used about 30% more AI calls and was slower. Its two misses did not repeat when we ran those two messages again, so they were ordinary variation. On these messages the single agent was simpler, faster and at least as good, so it stays the default. The team is there as an option and for comparison.
 
 The AI does not give exactly the same answer every time, so a repeat run can differ by one check. These numbers come from the latest full run of each kind.
 
@@ -290,6 +349,11 @@ Protected calls need the header `Authorization: Bearer <token>`.
 | GET | `/doctor/patients/{patient_id}/summary` | doctor | Structured AI summary of the recorded notes (`?appointment_id=` one on the doctor's own schedule) |
 | GET | `/doctor/patients/{patient_id}/summary/stream` | doctor | The same summary streamed as it is written (server-sent events: `meta`, many `partial`, one `final`) |
 | POST | `/chat` | patient | `{thread_id, message}` (up to 500 characters) or `{thread_id, confirm: true\|false}` from the card. Returns `kind` (`answer`, `pending`, `idk`, `emergency`, `check_failed` or `error`), `reply`, `sources`, `tool_calls` and, while an action waits, `pending_action` (`{action, summary}`). The patient comes from the login. |
+| POST | `/chat/stream` | patient | The same as `/chat`, but streamed: `step` events ("Checking Dr. Shah's free times…") and then one `final` event with the same answer |
+| POST | `/chat` (field `mode`) | patient | `"mode": "supervisor"` uses the information + booking team. The default is `"single"` |
+| POST | `/staff/chat`, `/staff/chat/stream` | staff | The Staff assistant. Same body and answer as the patient chat. Every change waits for Confirm |
+| GET | `/staff/events` | staff | Live updates (server-sent events): `hello`, `ping`, and one small event per change (`urgent_case`, `approval`, `rebooking`, `appointments`) |
+| GET | `/doctor/leave/{leave_id}/progress` | doctor, staff | Where the leave workflow is: still waiting for decisions (which rebookings) or finished |
 | GET | `/staff/search-debug` | staff | `?q=` the top 4 chunks from keyword, vector and hybrid search, each with file, section and score |
 | POST | `/doctor/leave` | doctor | Mark leave `{date, session: AM\|PM\|FULL}` within the next 30 days; cancels the affected appointments and proposes new times |
 | GET | `/doctor/leave` | doctor | The doctor's own leave |
@@ -389,8 +453,12 @@ backend/
     llm.py        the booking AI: model setup, Fact of the Day, red-flag check, doctor summary
     rag.py        the knowledge base: chunking, Chroma, BM25, hybrid search, the rewrite and answer chains
     agent.py      the LangGraph agent: the graph, its prompt, memory, one chat turn
-    tools.py      the 7 tools (a thin layer over the same API functions the website uses)
-    ops.py        the ONE booking path, and doctor leave + Staff rebooking (plain code)
+    tools.py      the 9 tools (a thin layer over the same API functions the website uses)
+    ops.py        the ONE booking path, doctor leave, Staff rebooking and the patient's choice of a new time (plain code)
+    leave_flow.py doctor leave as a LangGraph workflow that pauses and is saved in SQLite
+    staff_agent.py the Staff assistant (a second LangGraph agent)
+    supervisor.py the information + booking team behind a router
+    events.py     the live-update hub for the Staff page
     db.py         database tables and CSV loading
     config.py     settings and the clinic clock
   data/           data pack 1 (CSV files)
@@ -409,4 +477,4 @@ docker-compose.yml   runs backend + frontend together
 ```
 
 ## 🛠️ Built with
-Python, FastAPI, SQLite (no ORM), LangChain, LangGraph, Chroma, BM25, sentence-transformers · React 18, Vite 5 · pytest · Docker Compose, nginx
+Python, FastAPI (async, server-sent events), SQLite (no ORM), LangChain, LangGraph (with a SQLite checkpoint), Chroma, BM25, sentence-transformers · React 18, Vite 5 · pytest · Docker Compose, nginx

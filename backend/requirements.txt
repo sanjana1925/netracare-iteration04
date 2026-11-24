@@ -17,3 +17,4 @@ langgraph
 chromadb
 rank-bm25
 sentence-transformers
+langgraph-checkpoint-sqlite

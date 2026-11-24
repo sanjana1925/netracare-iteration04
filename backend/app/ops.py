@@ -8,6 +8,7 @@
 """
 from datetime import timedelta
 
+from . import events
 from . import config, llm, rules, service
 from .rules import Refusal
 from .service import transaction
@@ -16,16 +17,18 @@ from .service import transaction
 # =====================================================================================================
 # One booking path
 # =====================================================================================================
-def create_booking(conn, patient_id, doctor_id, speciality, visit_type, date, start, reason_text) -> dict:
+def create_booking(conn, patient_id, doctor_id, speciality, visit_type, date, start, reason_text, flag=None) -> dict:
     """Reason check -> red-flag check -> urgent case -> iteration 1 rules check -> insert.
 
     Returns {appointment_id, emergency}. Raises Refusal exactly like the endpoint (incl. RED_FLAG_CHECK_FAILED)."""
     reason = service.clean_reason(reason_text)
     # the red-flag check runs BEFORE any clinic rule. If it cannot run, nothing is booked.
-    try:
-        flag = llm.check_red_flags(reason)
-    except llm.RedFlagCheckError:
-        raise Refusal("RED_FLAG_CHECK_FAILED", llm.CHECK_FAILED_MESSAGE, http_status=503)
+    # (`flag` is already filled in when the async endpoint has done the check; otherwise it is done here.)
+    if flag is None:
+        try:
+            flag = llm.check_red_flags(reason)
+        except llm.RedFlagCheckError:
+            raise Refusal("RED_FLAG_CHECK_FAILED", llm.CHECK_FAILED_MESSAGE, http_status=503)
     emergency = None
     if flag.red_flag:
         service.require_patient(conn, patient_id)  # an unknown patient is a clean 404, not a database error
@@ -69,11 +72,12 @@ def _session_name(start_time: str) -> str:
     return "AM" if rules.to_minutes(start_time) < rules.to_minutes("13:00") else "PM"
 
 
-def find_proposal(conn, appt):
-    """Earliest free slot for an appointment hit by leave. Returns (doctor_id, date, start) or None.
+def candidate_slots(conn, appt, limit: int = 1, after=None):
+    """The earliest free slots for an appointment hit by leave, best first: a list of (doctor_id, date, start), at most `limit`.
 
     New consultation: any doctor covering the speciality, at or after the original time (tie: the original doctor,
-    then the lower doctor ID). Follow-up: the SAME doctor's next free time. Looks up to 30 days ahead of the clinic clock."""
+    then the lower doctor ID). Follow-up: the SAME doctor's times. Looks up to 30 days ahead of the clinic clock.
+    `after` = (date, start): only slots later than that (used to offer other choices after the proposed one)."""
     doctors = {d["doctor_id"]: d for d in conn.execute("SELECT * FROM doctors ORDER BY doctor_id")}
     if appt["visit_type"] == "follow_up":
         candidates = [appt["doctor_id"]]
@@ -82,19 +86,28 @@ def find_proposal(conn, appt):
         candidates = sorted(covering, key=lambda i: (i != appt["doctor_id"], i))  # original doctor first, then lower ID
     last_day = config.clinic_now().date() + timedelta(days=config.BOOKING_WINDOW_DAYS)
     day = rules.parse_date(appt["date"])
-    while day <= last_day:
-        best = None
+    found = []
+    while day <= last_day and len(found) < limit:
+        day_slots = []
         for rank, doc_id in enumerate(candidates):
             for slot in rules.free_slots(conn, doc_id, appt["speciality"], appt["visit_type"], day.isoformat()):
                 if day.isoformat() == appt["date"] and slot < appt["start_time"]:
                     continue
-                if best is None or (slot, rank) < best[:2]:
-                    best = (slot, rank, doc_id)
-                break  # free_slots is sorted: the first usable slot is this doctor's earliest that day
-        if best:
-            return best[2], day.isoformat(), best[0]
+                if after and (day.isoformat(), slot) <= tuple(after):
+                    continue
+                day_slots.append((slot, rank, doc_id))
+        for slot, _rank, doc_id in sorted(day_slots):
+            found.append((doc_id, day.isoformat(), slot))
+            if len(found) >= limit:
+                break
         day += timedelta(days=1)
-    return None
+    return found
+
+
+def find_proposal(conn, appt):
+    """Earliest free slot for an appointment hit by leave. Returns (doctor_id, date, start) or None."""
+    found = candidate_slots(conn, appt, limit=1)
+    return found[0] if found else None
 
 
 def mark_leave(conn, doctor_id: str, date_str: str, session: str) -> dict:
@@ -138,6 +151,8 @@ def mark_leave(conn, doctor_id: str, date_str: str, session: str) -> dict:
                 "VALUES (?,?,?,?,?,?)", (leave_id, appt["appointment_id"], new_id, appt["patient_id"], status, service._now_iso())).lastrowid
             proposals.append({"rebooking_id": reb, "original_appointment_id": appt["appointment_id"],
                               "patient_id": appt["patient_id"], "proposed_appointment_id": new_id, "status": status})
+    if proposals:
+        events.publish("rebooking", change="proposed", count=len(proposals))
     return {"leave_id": leave_id, "doctor": doctor["name"], "date": day.isoformat(), "session": session,
             "affected": len(proposals), "rebookings": proposals}
 
@@ -164,6 +179,59 @@ def list_rebookings(conn, include_decided=False):
     return rows
 
 
+def rebooking_options(conn, patient_id: str, other_choices: int = 2) -> list:
+    """For each of this patient's moved appointments that is waiting for a decision: the time already proposed, plus up to two OTHER free times.
+    Read only. The patient picks one in the chat (stretch goal: the patient chooses instead of Staff)."""
+    out = []
+    rows = conn.execute(
+        "SELECT rb.rebooking_id, rb.original_appointment_id, rb.proposed_appointment_id FROM rebookings rb "
+        "WHERE rb.patient_id=? AND rb.status='pending' ORDER BY rb.rebooking_id", (patient_id,)).fetchall()
+    for rb in rows:
+        orig = conn.execute("SELECT a.*, d.name AS doctor_name FROM appointments a JOIN doctors d USING(doctor_id) WHERE a.appointment_id=?",
+                            (rb["original_appointment_id"],)).fetchone()
+        prop = conn.execute("SELECT a.*, d.name AS doctor_name FROM appointments a JOIN doctors d USING(doctor_id) WHERE a.appointment_id=?",
+                            (rb["proposed_appointment_id"],)).fetchone()
+        others = candidate_slots(conn, orig, limit=other_choices, after=(prop["date"], prop["start_time"]))
+        names = {d["doctor_id"]: d["name"] for d in conn.execute("SELECT doctor_id, name FROM doctors")}
+
+        def slot(doctor_id, date, start):
+            return {"doctor_id": doctor_id, "doctor": names[doctor_id], "date": date, "start_time": start}
+        out.append({"rebooking_id": rb["rebooking_id"], "speciality": orig["speciality"], "visit_type": orig["visit_type"],
+                    "original": {"doctor": orig["doctor_name"], "date": orig["date"], "start_time": orig["start_time"]},
+                    "why": orig["moved_note"],
+                    "proposed": slot(prop["doctor_id"], prop["date"], prop["start_time"]),
+                    "other_choices": [slot(*o) for o in others]})
+    return out
+
+
+def choose_rebooking(conn, patient_id: str, rebooking_id: int, doctor_id: str, date: str, start_time: str) -> dict:
+    """The patient picks one of the offered times. The proposed time is simply approved. Another offered time replaces the proposal: the held slot
+    is freed, the new time is checked by the SAME clinic rules and booked. Anything that was not offered is refused."""
+    options = [o for o in rebooking_options(conn, patient_id) if o["rebooking_id"] == rebooking_id]
+    if not options:
+        raise Refusal("NOT_YOUR_REBOOKING", "There is no moved appointment of yours waiting for a choice.", http_status=403)
+    opt = options[0]
+    chosen = (doctor_id, date, start_time)
+    offered = [opt["proposed"]] + opt["other_choices"]
+    if chosen not in [(o["doctor_id"], o["date"], o["start_time"]) for o in offered]:
+        raise Refusal("NOT_OFFERED", "That time was not one of the times offered. Please pick one of them.")
+    if chosen == (opt["proposed"]["doctor_id"], opt["proposed"]["date"], opt["proposed"]["start_time"]):
+        return decide_rebooking(conn, rebooking_id, "patient", True)
+    with transaction(conn):
+        row = conn.execute("SELECT * FROM rebookings WHERE rebooking_id=? AND patient_id=? AND status='pending'", (rebooking_id, patient_id)).fetchone()
+        if row is None:
+            raise Refusal("NOT_PENDING", "That moved appointment was already decided.")
+        prop = conn.execute("SELECT * FROM appointments WHERE appointment_id=?", (row["proposed_appointment_id"],)).fetchone()
+        conn.execute("UPDATE appointments SET status='cancelled' WHERE appointment_id=?", (prop["appointment_id"],))  # frees the held slot
+        rules.check_booking(conn, patient_id, doctor_id, prop["speciality"], prop["visit_type"], date, start_time)  # the same rules as every booking
+        new_id = service._insert(conn, patient_id, doctor_id, prop["speciality"], prop["visit_type"], date, start_time, prop["reason"], bool(prop["urgent"]))
+        conn.execute("UPDATE appointments SET moved_note=? WHERE appointment_id=?", (prop["moved_note"], new_id))
+        conn.execute("UPDATE rebookings SET status='approved', proposed_appointment_id=?, decided_at=?, decided_by='patient' WHERE rebooking_id=?",
+                     (new_id, service._now_iso(), rebooking_id))
+    events.publish("rebooking", change="chosen")
+    return dict(conn.execute(_REBOOK_SQL + "WHERE rb.rebooking_id=?", (rebooking_id,)).fetchone())
+
+
 def decide_rebooking(conn, rebooking_id: int, staff_name: str, approve: bool) -> dict:
     with transaction(conn):
         row = conn.execute("SELECT * FROM rebookings WHERE rebooking_id=?", (rebooking_id,)).fetchone()
@@ -178,4 +246,5 @@ def decide_rebooking(conn, rebooking_id: int, staff_name: str, approve: bool) ->
                      ("booked" if approve else "cancelled", row["proposed_appointment_id"]))
         conn.execute("UPDATE rebookings SET status=?, decided_at=?, decided_by=? WHERE rebooking_id=?",
                      ("approved" if approve else "rejected", service._now_iso(), staff_name, rebooking_id))
+    events.publish("rebooking", change="approved" if approve else "rejected")
     return dict(conn.execute(_REBOOK_SQL + "WHERE rb.rebooking_id=?", (rebooking_id,)).fetchone())
